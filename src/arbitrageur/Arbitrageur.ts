@@ -122,31 +122,33 @@ export class Arbitrageur extends BotService {
         })
         // AYB: if below margin close and RE-OPEN. TO parametrize for now use 0.8
         // TODO: check max gas fee is reasonable
-        const side = perpPositionSize.gt(0) ? Side.SHORT : Side.LONG
+        const side = perpPositionSize.gt(0) ? Side.LONG : Side.SHORT
         if (isBelowPerpMR ) {
             // close first 
             await this.closePosition( this.wallet, market.baseToken) 
         }
         
-        /*await this.openPosition(
+        //const currCollat = free collateral -Minimum withrawl
+        let coll = await this.perpService.getFreeCollateral(this.wallet.address)
+        this.log.jinfo({ event: "collat", params: { market: market.name, sz: +coll }, })
+        // TODO.NXT withdrawl TP_PEXIT_WITHDRAWL .10
+        const TP_RESET_LEV = 5 // 5x
+        let reOpenSz = TP_RESET_LEV*coll.toNumber()
+        
+        await this.openPosition(
                 this.wallet,
                 market.baseToken,
                 side,
-                AmountType.BASE,
-                positionSizeDiffAbs,
-                        undefined,
-                        Big(config.BALANCE_MAX_GAS_FEE_ETH),
-                        this.referralCode,
-        ) */
+                AmountType.QUOTE,
+                Big(reOpenSz),
+                undefined,
+                undefined, // WAS: Big(config.BALANCE_MAX_GAS_FEE_ETH),
+                undefined, //was this.referralCode,
+        ) 
+
         let perpPositionSizeAfter = await Promise.all([
             this.perpService.getTotalPositionSize(this.wallet.address, market.baseToken),
               ])
-        this.log.jinfo({
-            event: "PositionSizeAfter",
-            params: {
-                market: market.name,
-                perpPositionSize: +perpPositionSizeAfter
-            },
-        })
+        this.log.jinfo( { event: "ReOpen", params: { market: market.name, sz: +perpPositionSizeAfter},} )
     }
 }

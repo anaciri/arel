@@ -5,7 +5,7 @@
     "ARBITRAGE_MAX_GAS_FEE_ETH": 0.02,
     "BALANCE_MAX_GAS_FEE_ETH": 0.1,
 
-    "PERP_MIN_MARGIN_RATIO": 0.2,
+    "PERP_MIN_MARGIN_RATIO": 0.42,
     "FTX_MIN_MARGIN_RATIO": 0.2,
 
     "PERP_EMERGENCY_MARGIN_RATIO": 0.1,
@@ -25,7 +25,7 @@
             "IS_EMERGENCY_REDUCE_MODE_ENABLED": true
         },
         "vPERP": {
-            "IS_ENABLED": true,
+            "IS_ENABLED": false,
             "FTX_MARKET_NAME": "PERP-PERP",
             "ORDER_AMOUNT": 1000,
             "SHORT_TRIGGER_SPREAD": 0.005,

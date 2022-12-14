@@ -1,5 +1,88 @@
-* install
+* install-build-run
+*install packages and build*
 sudo npm install -g npm@7.24.1
 npm install --save-dev typescript
 npm run build
 env $(cat .env | grep -v '#' | xargs) npm run start
+
+
+*configs and dotenv*
+- .env
+L2_WEB3_ENDPOINTS=http://127.0.0.1:8545
+# secrets
+PRIVATE_KEY=blah
+
+
+- basetoken config
+src/configs/config.json
+
+
+** run from debugger
+launch.json
+------------
+{
+      "name": "set env",
+      "type": "node",
+      "request": "launch",
+      "args": [
+        "${workspaceRoot}/src/index.ts"
+      ],
+      "env":{
+        "L2_WEB3_ENDPOINTS":"http://127.0.0.1:8545",
+        "PRIVATE_KEY":"blah"
+      },
+      "runtimeArgs": [
+        "--nolazy",
+        "-r",
+        "ts-node/register"
+      ],
+
+* environment setup
+**setup hardhat fork**
+- install hardhat in a local directory
+cd /Users/ayb/mio/code/tinker/dft/hh
+
+
+- ensure using your own signer in local node
+- hardhat.config.ts
+------------------------
+import { HardhatUserConfig } from 'hardhat/config';
+import '@nomicfoundation/hardhat-toolbox';
+
+export const BLOCK_NUMBER = 30306621;
+
+const config: HardhatUserConfig = {
+  solidity: {
+    settings: {
+      optimizer: {
+        enabled: true,
+        runs: 1000,
+      },
+    },
+    compilers: [
+      {
+        version: '0.7.6',
+      },
+    ],
+  },
+  networks: {
+    hardhat: {
+
+accounts:[{privateKey:"blah",
+balance:"10000000000000000000000"}],
+      mining: {
+        auto: true,
+        mempool: {
+          order: 'fifo',
+        },
+      },
+    },
+  },
+};
+
+export default config;
+
+*run fork*
+npx hardhat node --fork 
+https://opt-mainnet.g.alchemy.com/v2/oH4_c4rONzDHSXUvSdFpuXAmgMpvsQIi  
+--fork-block-number 30306622

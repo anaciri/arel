@@ -60,7 +60,8 @@ export class Arbitrageur extends BotService {
                 name: marketName,
                 baseToken: pool.baseAddress,
                 poolAddr: pool.address,
-                orderAmount: Big(market.ORDER_AMOUNT),
+                //TODO.RMV order amount
+                orderAmount: Big(666),
                 
             }
         }
@@ -70,18 +71,20 @@ export class Arbitrageur extends BotService {
         this.ethService.enableEndpointRotation()
         const balance = await this.perpService.getUSDCBalance(this.wallet.address)
         this.log.jinfo({ event: "CheckUSDCBalance", params: { balance: +balance } })
+        /*
         if (balance.gt(0)) {
             await this.approve(this.wallet, balance)
             await this.deposit(this.wallet, balance)
         }
-
+        */
         this.arbitrageRoutine()
     }
 
 
     async arbitrageRoutine() {
         while (true) {
-            this.markRoutineAlive("ArbitrageRoutine")
+            //TODO.STK turn on heart beat below
+            //this.markRoutineAlive("ArbitrageRoutine")
             await Promise.all(
                 Object.values(this.marketMap).map(async market => {
                     try {
@@ -105,37 +108,35 @@ export class Arbitrageur extends BotService {
         return marginRatio !== null && marginRatio.lt(criterion)
     }
 
-    async arbitrage(market: Market) {
-        // getting margin ratio
-        const [isBelowPerpMR, perpPositionSize] = 
-        await Promise.all([
-            this.isBelowPerpMarginRatio(config.PERP_MIN_MARGIN_RATIO),
-            this.perpService.getTotalPositionSize(this.wallet.address, market.baseToken),
-        ])
-     
-        const orderAmount = market.orderAmount
-
-        
+    private async isRescaleTresh(criterion: number) {
+        const marginRatio = await this.perpService.getMarginRatio(this.wallet.address)
         this.log.jinfo({
-            event: "PositionSizeBefore",
-            params: { market: market.name, perpPositionSize: +perpPositionSize },
+            event: "PerpMarginRatio",
+            params: { marginRatio: marginRatio === null ? null : +marginRatio },
         })
-        // AYB: if below margin close and RE-OPEN. TO parametrize for now use 0.8
-        // TODO: check max gas fee is reasonable
-        const side = perpPositionSize.gt(0) ? Side.LONG : Side.SHORT
-        if (isBelowPerpMR ) {
-            // close first 
+        return marginRatio !== null && marginRatio.gt(criterion)
+    }
+
+    async arbitrage(market: Market) {
+        // --------------------------------------------------------------------------------------------
+        // check if scale trigger
+        // --------------------------------------------------------------------------------------------
+        if ( await this.isRescaleTresh(config.TP_MR_SCALE)) 
+        {
+            this.log.jinfo({ event: "scale trigger", params: { market: market.name }, })
+            let sz = await this.perpService.getTotalPositionSize(this.wallet.address, market.baseToken)
+            let side = sz.gt(0) ? Side.LONG : Side.SHORT
+            // re-open at reset margin
             await this.closePosition( this.wallet, market.baseToken) 
-        }
-        
-        //const currCollat = free collateral -Minimum withrawl
-        let coll = await this.perpService.getFreeCollateral(this.wallet.address)
-        this.log.jinfo({ event: "collat", params: { market: market.name, sz: +coll }, })
-        // TODO.NXT withdrawl TP_PEXIT_WITHDRAWL .10
-        const TP_RESET_LEV = 5 // 5x
-        let reOpenSz = TP_RESET_LEV*coll.toNumber()
-        
-        await this.openPosition(
+            //TODO.NXT multiple trader accounts
+            let coll = await this.perpService.getFreeCollateral(this.wallet.address)
+            this.log.jinfo({ event: "collat", params: { market: market.name, sz: +coll }, })
+            // TODO.NXT wdraw TP_PEXIT_WITHDRAWL .10
+            const TP_PEXIT_WITHDRAWL = 0.9
+            let rstlev = 1/(config.TP_MR_RESET)
+            let reOpenSz = TP_PEXIT_WITHDRAWL*rstlev*coll.toNumber()
+            // TODO.STK  adjust default max gas fee is reasonable
+            await this.openPosition(
                 this.wallet,
                 market.baseToken,
                 side,
@@ -144,11 +145,10 @@ export class Arbitrageur extends BotService {
                 undefined,
                 undefined, // WAS: Big(config.BALANCE_MAX_GAS_FEE_ETH),
                 undefined, //was this.referralCode,
-        ) 
-
-        let perpPositionSizeAfter = await Promise.all([
-            this.perpService.getTotalPositionSize(this.wallet.address, market.baseToken),
-              ])
-        this.log.jinfo( { event: "ReOpen", params: { market: market.name, sz: +perpPositionSizeAfter},} )
+            ) 
+            let rsz = await this.perpService.getTotalPositionSize(this.wallet.address, market.baseToken)
+            this.log.jinfo( {event: "Reset", params: { market: market.name, sz: +rsz},} )
+        }
+        
     }
 }

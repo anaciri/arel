@@ -1,0 +1,144 @@
+{
+  // 使用 IntelliSense 以学习相关的 Node.js 调试属性。
+  // 悬停以查看现有属性的描述。
+  // 欲了解更多信息，请访问: https://go.microsoft.com/fwlink/?linkid=830387
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug Current TS File",
+      "type": "node",
+      "request": "launch",
+      "args": [
+        "${relativeFile}"
+      ],
+      "runtimeArgs": [
+        "--nolazy",
+        "-r",
+        "ts-node/register"
+      ],
+      "sourceMaps": true,
+      "cwd": "${workspaceRoot}",
+      "protocol": "inspector",
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
+    {
+      "name": "Debug Exec Subcommand",
+      "type": "node",
+      "request": "launch",
+      "args": [
+        "${workspaceRoot}/src/cli/index.ts", "exec", "${workspaceRoot}/strat/open.yml"
+      ],
+      "runtimeArgs": [
+        "--nolazy",
+        "-r",
+        "ts-node/register"
+      ],
+      "sourceMaps": true,
+      "cwd": "${workspaceRoot}",
+      "protocol": "inspector",
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
+    {
+      "name": "use-dotenv",
+      "type": "node",
+      "request": "launch",
+      "envFile": "${workspaceFolder}/.env",
+      "args": [
+        "${workspaceRoot}/src/index.ts"
+      ],
+      "runtimeArgs": [
+        "--nolazy",
+        "-r",
+        "ts-node/register"
+      ],
+      "sourceMaps": true,
+      "cwd": "${workspaceRoot}",
+      "protocol": "inspector",
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
+    {
+      "name": "set env",
+      "type": "node",
+      "request": "launch",
+      "args": [
+        "${workspaceRoot}/src/index.ts"
+      ],
+      "env":{
+        "L2_WEB3_ENDPOINTS":"http://127.0.0.1:8545",
+        "PRIVATE_KEY":"e61e18241225f08beeedb6806413ba5edc0ee2f97f25ad3eface04792a3b3451"
+      },
+      "runtimeArgs": [
+        "--nolazy",
+        "-r",
+        "ts-node/register"
+      ],
+      "sourceMaps": true,
+      "cwd": "${workspaceRoot}",
+      "protocol": "inspector",
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
+    {
+      "name": "Arb with env",
+      "type": "node",
+      "request": "launch",
+      "args": [
+        "${workspaceRoot}/src/index.ts"
+      ],
+      "env":{
+        "STAGE":"production",
+        "WEB3_ENDPOINT":"https://poa-xdai.gateway.pokt.network/v1/lb/61d4e356431851003b637e4b",
+        "ARBITRAGEUR_PK":"c1fe229c9990ba2b2e555f2be759d5fc9ecd39bb9c04d1bc87d7d51225fd2cdd"
+      },
+      "runtimeArgs": [
+        "--nolazy",
+        "-r",
+        "ts-node/register"
+      ],
+      "sourceMaps": true,
+      "cwd": "${workspaceRoot}",
+      "protocol": "inspector",
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
+    {
+      "name": "Debug perp-arb",
+      "type": "node",
+      "request": "launch",
+      "args": [
+        "${workspaceRoot}/src/index.ts"
+      ],
+      "runtimeArgs": [
+        "--nolazy",
+        "-r",
+        "ts-node/register"
+      ],
+      "sourceMaps": true,
+      "cwd": "${workspaceRoot}",
+      "protocol": "inspector",
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
+    {
+      "name": "Debug Current TS Tests File",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceRoot}/node_modules/.bin/_mocha",
+      "args": [
+        "-r",
+        "ts-node/register",
+        "${relativeFile}",
+        "--colors",
+        "-t 100000"
+      ],
+      "cwd": "${workspaceRoot}",
+      "protocol": "inspector",
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    }
+  ]
+}
+

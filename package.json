@@ -14,7 +14,8 @@
         "sls:invoke:local": "sls invoke local --function main"
     },
     "dependencies": {
-        "@perp/common": "0.1.12"
+        "@perp/common": "0.1.12",
+        "@perp/curie-deployments": "2022.12.20-1671509278203"
     },
     "devDependencies": {
         "@typechain/ethers-v5": "7.0.1",
@@ -28,9 +29,9 @@
         "serverless": "3.18.2",
         "serverless-plugin-log-retention": "2.0.0",
         "serverless-webpack": "5.7.0",
-        "ts-node": "10.1.0",
+        "ts-node": "^10.9.1",
         "typechain": "5.1.2",
-        "typescript": "^4.3.5"
+        "typescript": "^4.9.4"
     },
     "importSort": {
         ".js, .jsx, .ts, .tsx": {

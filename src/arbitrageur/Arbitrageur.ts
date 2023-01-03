@@ -11,7 +11,7 @@ import { Service } from "typedi"
 import config from "../configs/config.json"
 require('dotenv').config();
 
-//TESTING: block 55746800
+//TESTING: block 55746888
 //TODO.REFACT put on utility function. Templetize
 
 type Wallet = ethers.Wallet
@@ -28,6 +28,7 @@ interface Market {
     baseToken: string
     poolAddr: string
     orderAmount: Big
+    lexitTresh: number
     scaleTresh: number
 }
 
@@ -90,6 +91,7 @@ export class Arbitrageur extends BotService {
                 poolAddr: pool.address,
                 //TODO.RMV order amount
                 orderAmount: Big(666),
+                lexitTresh: market.LEXIT_THRESH,
                 scaleTresh: market.SCALE_THRESH
                 
             }
@@ -141,11 +143,54 @@ export class Arbitrageur extends BotService {
         let criterion = this.marketMap[mkt].scaleTresh
         let wlt = this.ethService.privateKeyToWallet(this.pkMap.get(mkt)!)
         const marginRatio = await this.perpService.getMarginRatio(wlt.address)
-        this.log.jinfo({ event: "mr", params: { marginRatio: marginRatio === null ? null : +marginRatio },})
+        //this.log.jinfo({ event: "mr", params: { marginRatio: marginRatio === null ? null : +marginRatio },})
         return marginRatio !== null && marginRatio.gt(criterion)
     }
 
+    private async isStopLoss(mkt: string) {
+        let criterion = this.marketMap[mkt].lexitTresh
+        let wlt = this.ethService.privateKeyToWallet(this.pkMap.get(mkt)!)
+        const marginRatio = await this.perpService.getMarginRatio(wlt.address)
+        this.log.jinfo({ event: "mr", params: { marginRatio: marginRatio === null ? null : +marginRatio },})
+        return marginRatio !== null && marginRatio.lt(criterion)
+    }
+
     async arbitrage(market: Market) {
+        // --------------------------------------------------------------------------------------------
+        // check if stop loss
+        // AYB.REFACTOR repetitive code. move to butil?
+        // --------------------------------------------------------------------------------------------
+        if ( await this.isStopLoss(market.name)) 
+        {
+            this.log.jinfo({ event: "scale trigger", params: { market: market.name }, })
+            let side = market.name.endsWith("SHORT") ? Side.SHORT : Side.LONG
+            // re-open at reset margin
+            //TODO.OPTIMIZE avoid keep calculating wallet
+            let wlt = this.ethService.privateKeyToWallet(this.pkMap.get(market.name)!)
+
+            await this.closePosition( wlt!, market.baseToken) 
+            let coll = await this.perpService.getFreeCollateral(wlt!.address)
+            this.log.jinfo({ event: "collat", params: { market: market.name, FC: +coll }, })
+            // TODO.NXT handle when absolute size below a minimum. $2 ? then mr=1
+            // TODO.NXT wdraw TP_PEXIT_WITHDRAWL .10
+            // TODO.NXT parametrize inconfig PEXIT and LEXIT
+            const TP_LEXIT_WITHDRAWL = 0.6
+            let rstlev = 1/(config.TP_MR_RESET)
+            let reOpenSz = TP_LEXIT_WITHDRAWL*rstlev*coll.toNumber()
+            // TODO.STK  adjust default max gas fee is reasonable
+            await this.openPosition(
+                wlt!,
+                market.baseToken,
+                side,
+                AmountType.QUOTE,
+                Big(reOpenSz),
+                undefined,
+                undefined, // WAS: Big(config.BALANCE_MAX_GAS_FEE_ETH),
+                undefined, //was this.referralCode,
+            ) 
+            let rsz = await this.perpService.getTotalPositionSize(wlt.address, market.baseToken)
+            this.log.jinfo( {event: "Lexit.Reopen", params: { market: market.name, sz: +rsz},} )
+        }
         // --------------------------------------------------------------------------------------------
         // check if scale trigger
         // --------------------------------------------------------------------------------------------

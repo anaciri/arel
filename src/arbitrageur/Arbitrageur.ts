@@ -174,9 +174,9 @@ export class Arbitrageur extends BotService {
             // TODO.NXT handle when absolute size below a minimum. $2 ? then mr=1
             // TODO.NXT wdraw TP_PEXIT_WITHDRAWL .10
             // TODO.NXT parametrize inconfig PEXIT and LEXIT
-            const TP_LEXIT_WITHDRAWL = 0.6
+            const TP_WITHDRAWL = 0.9
             let rstlev = 1/(config.TP_MR_RESET)
-            let reOpenSz = TP_LEXIT_WITHDRAWL*rstlev*coll.toNumber()
+            let reOpenSz = TP_WITHDRAWL*rstlev*coll.toNumber()
             // TODO.STK  adjust default max gas fee is reasonable
             await this.openPosition(
                 wlt!,
@@ -206,9 +206,9 @@ export class Arbitrageur extends BotService {
             let coll = await this.perpService.getFreeCollateral(wlt!.address)
             this.log.jinfo({ event: "collat", params: { market: market.name, sz: +coll }, })
             // TODO.NXT wdraw TP_PEXIT_WITHDRAWL .10
-            const TP_PEXIT_WITHDRAWL = 0.9
+            const TP_WITHDRAWL = 0.9
             let rstlev = 1/(config.TP_MR_RESET)
-            let reOpenSz = TP_PEXIT_WITHDRAWL*rstlev*coll.toNumber()
+            let reOpenSz = TP_WITHDRAWL*rstlev*coll.toNumber()
             // TODO.STK  adjust default max gas fee is reasonable
             await this.openPosition(
                 wlt!,

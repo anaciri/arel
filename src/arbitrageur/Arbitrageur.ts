@@ -27,9 +27,14 @@ interface Market {
     name: string
     baseToken: string
     poolAddr: string
-    orderAmount: Big
-    lexitTresh: number
-    scaleTresh: number
+    
+    minReturn: number
+    minMarginRatio: number
+    maxMarginRatio: number
+// TODO.RMV
+orderAmount: Big
+
+
 }
 
 const DUST_USD_SIZE = Big(100)
@@ -91,9 +96,9 @@ export class Arbitrageur extends BotService {
                 poolAddr: pool.address,
                 //TODO.RMV order amount
                 orderAmount: Big(666),
-                lexitTresh: market.LEXIT_THRESH,
-                scaleTresh: market.SCALE_THRESH
-                
+                minReturn: market.MIN_RETURN,
+                minMarginRatio: market.MIN_MARGIN_RATIO,
+                maxMarginRatio: market.MAX_MARGIN_RATIO
             }
         }
     }
@@ -140,20 +145,54 @@ export class Arbitrageur extends BotService {
     }
 
     private async isScaleTresh(mkt: string) {
-        let criterion = this.marketMap[mkt].scaleTresh
+        let criterion = this.marketMap[mkt].maxMarginRatio
         let wlt = this.ethService.privateKeyToWallet(this.pkMap.get(mkt)!)
         const marginRatio = await this.perpService.getMarginRatio(wlt.address)
         //this.log.jinfo({ event: "mr", params: { marginRatio: marginRatio === null ? null : +marginRatio },})
         return marginRatio !== null && marginRatio.gt(criterion)
     }
 
-    private async isStopLoss(mkt: string) {
+    /*private async isStopLoss(mkt: string) {
         let criterion = this.marketMap[mkt].lexitTresh
         let wlt = this.ethService.privateKeyToWallet(this.pkMap.get(mkt)!)
         const marginRatio = await this.perpService.getMarginRatio(wlt.address)
         this.log.jinfo({ event: "mr", params: { marginRatio: marginRatio === null ? null : +marginRatio },})
         return marginRatio !== null && marginRatio.lt(criterion)
+    }*/
+
+    //-----------------------------------------------------------------------------------
+    // stop loss on EITHER unrealizedReturn or exit from margin band (default:10-2: 8 )
+    // using max lev simplifies collat tracking. always == usdc balance on vault
+    //-----------------------------------------------------------------------------------
+    
+    private async isStopLoss(mkt: string): Promise<boolean> {
+        
+        const OP_USDC_ADDR = '0x7F5c764cBc14f9669B88837ca1490cCa17c31607'
+        let wlt = this.ethService.privateKeyToWallet(this.pkMap.get(mkt)!)
+        // TODO.OPTM make it a this param
+        const vault = this.perpService.createVault()
+
+        // check unrealizedReturn
+        const maxloss = this.marketMap[mkt].minReturn
+        const upnl =  (await this.perpService.getOwedAndUnrealizedPnl(wlt.address)).unrealizedPnl
+        //TODO.NXT add pending funding to pnl
+        const collat = (await vault.getBalanceByToken(wlt.address, OP_USDC_ADDR)) / 10**6
+        
+        let uret = (collat + upnl.toNumber())/collat
+        if( uret < this.marketMap[mkt].minReturn ){ 
+            return true
+            console.log(mkt + ": bellow min ret")
+        }
+
+        // check mr condtion
+        const mmr = this.marketMap[mkt].minMarginRatio
+        const mr = await this.perpService.getMarginRatio(wlt.address)
+        //TODO.BKL support eth collat collTokens =  await vault.getCollateralTokens(wlt.address)
+
+        console.log(mkt + ": uret:" + uret.toPrecision(4) + " mr:" + mr?.toPrecision(4) )
+        return mr !== null && mr.lt(mmr)
     }
+   
 
     async arbitrage(market: Market) {
         // --------------------------------------------------------------------------------------------
@@ -175,7 +214,7 @@ export class Arbitrageur extends BotService {
             // TODO.NXT wdraw TP_PEXIT_WITHDRAWL .10
             // TODO.NXT parametrize inconfig PEXIT and LEXIT
             const TP_WITHDRAWL = 0.9
-            let rstlev = 1/(config.TP_MR_RESET)
+            let rstlev = 1/(config.RESET_MARGIN_RATIO)
             let reOpenSz = TP_WITHDRAWL*rstlev*coll.toNumber()
             // TODO.STK  adjust default max gas fee is reasonable
             await this.openPosition(
@@ -207,7 +246,7 @@ export class Arbitrageur extends BotService {
             this.log.jinfo({ event: "collat", params: { market: market.name, sz: +coll }, })
             // TODO.NXT wdraw TP_PEXIT_WITHDRAWL .10
             const TP_WITHDRAWL = 0.9
-            let rstlev = 1/(config.TP_MR_RESET)
+            let rstlev = 1/(config.RESET_MARGIN_RATIO)
             let reOpenSz = TP_WITHDRAWL*rstlev*coll.toNumber()
             // TODO.STK  adjust default max gas fee is reasonable
             await this.openPosition(

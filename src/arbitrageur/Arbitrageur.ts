@@ -29,6 +29,7 @@ interface Market {
     poolAddr: string
     
     minReturn: number
+    maxReturn: number
     minMarginRatio: number
     maxMarginRatio: number
 // TODO.RMV
@@ -97,6 +98,7 @@ export class Arbitrageur extends BotService {
                 //TODO.RMV order amount
                 orderAmount: Big(666),
                 minReturn: market.MIN_RETURN,
+                maxReturn: market.MAX_RETURN,
                 minMarginRatio: market.MIN_MARGIN_RATIO,
                 maxMarginRatio: market.MAX_MARGIN_RATIO
             }
@@ -144,13 +146,41 @@ export class Arbitrageur extends BotService {
         //return marginRatio !== null && marginRatio.lt(criterion)
     }
 
-    private async isScaleTresh(mkt: string) {
+    private async isScaleTresh(mkt: string):  Promise<boolean>  {
+        //TODO.NEXT refactor out this common code to main routine
+        //----- common with stoploss refactor out
+        const OP_USDC_ADDR = '0x7F5c764cBc14f9669B88837ca1490cCa17c31607'
+        let wlt = this.ethService.privateKeyToWallet(this.pkMap.get(mkt)!)
+
+        // thresh for fhis mkt
+        const maxret = this.marketMap[mkt].maxReturn
+        const mmr = this.marketMap[mkt].maxMarginRatio
+
+        const upnl =  (await this.perpService.getOwedAndUnrealizedPnl(wlt.address)).unrealizedPnl
+        const mr = await this.perpService.getMarginRatio(wlt.address)
+        // TODO.OPTM make it a this param
+        const vault = this.perpService.createVault()
+        const collat = (await vault.getBalanceByToken(wlt.address, OP_USDC_ADDR)) / 10**6
+        //TODO.NXT add pending funding to pnl
+        let uret = (collat + upnl.toNumber())/collat
+        //------------- common
+
+        // check if excessive positive unrealizedReturn i.e approaching DC deceleration of compounding rate
+        
+        if( uret > this.marketMap[mkt].maxReturn ){ 
+            return true; 
+            console.log(mkt + ": exceeding max ret")
+        }
+        return mr !== null && mr.gt(mmr)
+    }
+
+    /*private async isScaleTresh(mkt: string) {
         let criterion = this.marketMap[mkt].maxMarginRatio
         let wlt = this.ethService.privateKeyToWallet(this.pkMap.get(mkt)!)
         const marginRatio = await this.perpService.getMarginRatio(wlt.address)
         //this.log.jinfo({ event: "mr", params: { marginRatio: marginRatio === null ? null : +marginRatio },})
         return marginRatio !== null && marginRatio.gt(criterion)
-    }
+    }*/
 
     /*private async isStopLoss(mkt: string) {
         let criterion = this.marketMap[mkt].lexitTresh
@@ -233,6 +263,7 @@ export class Arbitrageur extends BotService {
         // --------------------------------------------------------------------------------------------
         // check if scale trigger
         // --------------------------------------------------------------------------------------------
+ 
         if ( await this.isScaleTresh(market.name)) 
         {
             this.log.jinfo({ event: "scale trigger", params: { market: market.name }, })

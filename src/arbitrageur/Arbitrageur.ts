@@ -153,7 +153,6 @@ export class Arbitrageur extends BotService {
         let wlt = this.ethService.privateKeyToWallet(this.pkMap.get(mkt)!)
 
         // thresh for fhis mkt
-        const maxret = this.marketMap[mkt].maxReturn
         const mmr = this.marketMap[mkt].maxMarginRatio
 
         const upnl =  (await this.perpService.getOwedAndUnrealizedPnl(wlt.address)).unrealizedPnl
@@ -231,7 +230,7 @@ export class Arbitrageur extends BotService {
         // --------------------------------------------------------------------------------------------
         if ( await this.isStopLoss(market.name)) 
         {
-            this.log.jinfo({ event: "scale trigger", params: { market: market.name }, })
+            this.log.jinfo({ event: "stop loss trigger", params: { market: market.name }, })
             let side = market.name.endsWith("SHORT") ? Side.SHORT : Side.LONG
             // re-open at reset margin
             //TODO.OPTIMIZE avoid keep calculating wallet
@@ -243,7 +242,7 @@ export class Arbitrageur extends BotService {
             // TODO.NXT handle when absolute size below a minimum. $2 ? then mr=1
             // TODO.NXT wdraw TP_PEXIT_WITHDRAWL .10
             // TODO.NXT parametrize inconfig PEXIT and LEXIT
-            const TP_WITHDRAWL = 0.9
+            const TP_WITHDRAWL = 0.98
             let rstlev = 1/(config.RESET_MARGIN_RATIO)
             let reOpenSz = TP_WITHDRAWL*rstlev*coll.toNumber()
             // TODO.STK  adjust default max gas fee is reasonable
@@ -258,7 +257,7 @@ export class Arbitrageur extends BotService {
                 undefined, //was this.referralCode,
             ) 
             let rsz = await this.perpService.getTotalPositionSize(wlt.address, market.baseToken)
-            this.log.jinfo( {event: "Lexit.Reopen", params: { market: market.name, sz: +rsz},} )
+            this.log.jinfo( {event: "Downscale", params: { market: market.name, sz: +rsz},} )
         }
         // --------------------------------------------------------------------------------------------
         // check if scale trigger
@@ -291,7 +290,7 @@ export class Arbitrageur extends BotService {
                 undefined, //was this.referralCode,
             ) 
             let rsz = await this.perpService.getTotalPositionSize(wlt.address, market.baseToken)
-            this.log.jinfo( {event: "Reset", params: { market: market.name, sz: +rsz},} )
+            this.log.jinfo( {event: "Rescale", params: { market: market.name, sz: +rsz},} )
         }
         
     }

@@ -33,7 +33,7 @@ interface Market {
     maxReturn: number
     minMarginRatio: number
     maxMarginRatio: number
-    initialCollat: number
+    collateral: number
     resetLeverage: number
 // TODO.RMV
 orderAmount: Big
@@ -69,7 +69,7 @@ async dbg_get_uret() {
     let test =  await this.perpService.getTotalPositionSize(wlt.address, perpBaseToken)
     let vault = await this.perpService.createVault()
 
-    const initalCollateral = this.marketMap[mkt].initialCollat
+    const initalCollateral = this.marketMap[mkt].collateral
     const currCollateral = (await vault.getBalanceByToken(wlt.address, OP_USDC_ADDR)) / 10**6
     const upnl =  (await this.perpService.getOwedAndUnrealizedPnl(wlt.address)).unrealizedPnl
 
@@ -131,7 +131,7 @@ async dbg_get_uret() {
                 maxReturn: market.MAX_RETURN,
                 minMarginRatio: market.MIN_MARGIN_RATIO,
                 maxMarginRatio: market.MAX_MARGIN_RATIO,
-                initialCollat: market.START_COLLATERAL,
+                collateral: market.START_COLLATERAL,
                 resetLeverage: market.RESET_LEVERAGE
             }
         }
@@ -202,13 +202,13 @@ async dbg_get_uret() {
         //------------- common
 
         // check if excessive positive unrealizedReturn i.e approaching DC deceleration of compounding rate
-        let collatInitial = this.marketMap[mkt].initialCollat
+        let collat = this.marketMap[mkt].collateral
         const upnl =  (await this.perpService.getOwedAndUnrealizedPnl(wlt.address)).unrealizedPnl
 
-        let uret = 1 + ((collatCurr + upnl.toNumber()) - collatInitial)/collatInitial
-
+        //let uret = 1 + ((collatCurr + upnl.toNumber()) - collatInitial)/collatInitial
+        let uret = 1 + upnl.toNumber()/collat
         if( uret > this.marketMap[mkt].maxReturn ){ 
-            console.log(mkt + " SCALE: "+ mkt + "pnl: " + upnl)
+            console.log(mkt + " SCALE: "+ mkt + "curcoll: " + collat)
             return true; 
         }
         return false
@@ -245,23 +245,22 @@ async dbg_get_uret() {
         const vault = this.perpService.createVault()
 
         // check unrealizedReturn
-        //const maxloss = this.marketMap[mkt].minReturn
-        //const upnl =  (await this.perpService.getOwedAndUnrealizedPnl(wlt.address)).unrealizedPnl
         //TODO.NXT add pending funding to pnl
-        const collatCurr = (await vault.getBalanceByToken(wlt.address, OP_USDC_ADDR)) / 10**6
-        
+        // supportedvault func??? better useconst collatCurr = (await vault.getBalanceByToken(wlt.address, OP_USDC_ADDR)) / 10**6
+        //let coll = await this.perpService.getFreeCollateral(wlt!.address)
         // KISS keep it simply smarty. 1+ (collatFinal - initial collat)/collat initial
-        //let uret = (collat + upnl.toNumber())/collat
-        let collatInitial = this.marketMap[mkt].initialCollat
+        // ret = 1 + [final- initial]/initialcurrcollat is == colInitial + pnl => 
+        // ret = 1 + [(colInitial + pnl)-colinitila]/colInitial == pnl/initial
+        let collat = this.marketMap[mkt].collateral
         const upnl =  (await this.perpService.getOwedAndUnrealizedPnl(wlt.address)).unrealizedPnl
-
-        let uret = 1 + ((collatCurr + upnl.toNumber()) - collatInitial)/collatInitial
+        //let uret = 1 + ((collatCurr + upnl.toNumber()) - collat)/collat
+        let uret = 1 + upnl.toNumber()/collat
 
         if( uret < this.marketMap[mkt].minReturn ){ 
-            console.log(mkt + " LM: "+ mkt + "pnl: " + upnl)
+            console.log(mkt + " LMit: "+ mkt + "pnl: " + upnl)
             return true
         }
-        console.log(mkt + ": pnl: " + upnl + " coll: " + collatCurr)
+        console.log(mkt + ": pnl: " + upnl + " uret: " + uret)
         return false
 
         // check mr condtion. remove
@@ -289,18 +288,21 @@ async dbg_get_uret() {
             //TODO.OPTIMIZE avoid keep calculating wallet
             let wlt = this.ethService.privateKeyToWallet(this.pkMap.get(market.name)!)
             await this.closePosition( wlt!, market.baseToken) 
-            //let coll = await this.perpService.getFreeCollateral(wlt!.address)
+            let newcoll = await this.perpService.getFreeCollateral(wlt!.address)
+            newcoll = newcoll.div(10**6)
             // LM loss Mitigation
-            const vault = this.perpService.createVault()
-            let newcoll = (await vault.getBalanceByToken(wlt.address, OP_USDC_ADDR)) / 10**6
-            this.log.jinfo({ event: "lM: ", params: { market: market.name, newColl: + newcoll }, })
+            //const vault = this.perpService.createVault()
+            // vault contract retrieving weird values. saw perp notes only their for compatibility.
+            // better use freecollat
+            //let newcoll = (await vault.getBalanceByToken(wlt.address, OP_USDC_ADDR)) / 10**6
+            this.log.jinfo({ event: "lMit: ", params: { market: market.name, newColl: + newcoll }, })
             // TODO.NXT handle when absolute size below a minimum. $2 ? then mr=1
             // TODO.NXT wdraw TP_PEXIT_WITHDRAWL .10
             // TODO.NXT parametrize inconfig PEXIT and LEXIT
             //const TP_WITHDRAWL = 0.98
             
             let rstlev = this.marketMap[market.name].resetLeverage
-            let reOpenSz = rstlev*newcoll
+            let reOpenSz = rstlev*newcoll.toNumber()
             // TODO.STK  adjust default max gas fee is reasonable
             await this.openPosition(
                 wlt!,
@@ -312,7 +314,7 @@ async dbg_get_uret() {
                 undefined, // WAS: Big(config.BALANCE_MAX_GAS_FEE_ETH),
                 undefined, //was this.referralCode,
             ) 
-            this.marketMap[market.name].initialCollat = newcoll
+            this.marketMap[market.name].collateral = newcoll.toNumber()
             //let rsz = await this.perpService.getTotalPositionSize(wlt.address, market.baseToken)
             //this.log.jinfo( {event: "Downscale", params: { market: market.name, sz: +rsz},} )
         }
@@ -331,13 +333,15 @@ async dbg_get_uret() {
             await this.closePosition( wlt!, market.baseToken) 
             //let coll = await this.perpService.getFreeCollateral(wlt!.address)
             // rebase collateral
-            const vault = this.perpService.createVault()
-            const newcollat = (await vault.getBalanceByToken(wlt.address, OP_USDC_ADDR)) / 10**6
-
+            //const vault = this.perpService.createVault()
+            //const newcollat = (await vault.getBalanceByToken(wlt.address, OP_USDC_ADDR)) / 10**6
+            let newcoll = await this.perpService.getFreeCollateral(wlt!.address)
+            newcoll = newcoll.div(10**6)
             // TODO.NXT wdraw TP_PEXIT_WITHDRAWL .10
             //const TP_WITHDRAWL = 0.98
             //let rstlev = 1/(config.RESET_MARGIN_RATIO)
-            let reOpenSz = this.marketMap[market.name].resetLeverage*newcollat
+            let rstlev = this.marketMap[market.name].resetLeverage
+            let reOpenSz = rstlev*newcoll.toNumber()
             // TODO.STK  adjust default max gas fee is reasonable
             await this.openPosition(
                 wlt!,
@@ -350,8 +354,8 @@ async dbg_get_uret() {
                 undefined, //was this.referralCode,
             ) 
             //let rsz = await this.perpService.getTotalPositionSize(wlt.address, market.baseToken)
-            this.marketMap[market.name].initialCollat = newcollat
-            this.log.jinfo( {event: "Rescale", params: { market: market.name, sz: +newcollat},} )
+            this.marketMap[market.name].collateral = newcoll.toNumber()
+            this.log.jinfo( {event: "Rescale", params: { market: market.name, ncoll: +newcoll},} )
         }
         
     }

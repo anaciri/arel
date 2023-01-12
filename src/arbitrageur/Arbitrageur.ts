@@ -150,6 +150,8 @@ async dbg_get_uret() {
        // OJO. BOOKMARK. after done testin. COMMENT out AND uncomment this.arbitrageRoutine()
         //this.dbg_get_uret()
         // UNCOMMENT ME ABOVE to debug
+        // WAIT FOR setup to finish
+
         this.arbitrageRoutine()
     }
 
@@ -259,6 +261,7 @@ async dbg_get_uret() {
             console.log(mkt + " LM: "+ mkt + "pnl: " + upnl)
             return true
         }
+        console.log(mkt + ": pnl: " + upnl + " coll: " + collatCurr)
         return false
 
         // check mr condtion. remove

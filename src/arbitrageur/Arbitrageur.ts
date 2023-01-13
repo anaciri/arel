@@ -196,7 +196,7 @@ async dbg_get_uret() {
         //const mr = await this.perpService.getMarginRatio(wlt.address)
         // TODO.OPTM make it a this param
         const vault = this.perpService.createVault()
-        const collatCurr = (await vault.getBalanceByToken(wlt.address, OP_USDC_ADDR)) / 10**6
+        //const collatCurr = (await vault.getBalanceByToken(wlt.address, OP_USDC_ADDR)) / 10**6
         //TODO.NXT add pending funding to pnl
         //let uret = (collat + upnl.toNumber())/collat
         //------------- common
@@ -260,7 +260,7 @@ async dbg_get_uret() {
             console.log(mkt + " LMit: "+ mkt + "pnl: " + upnl)
             return true
         }
-        console.log(mkt + ": pnl: " + upnl + " uret: " + uret)
+        console.log(mkt + ": pnl: " + upnl.toFixed(4) + " uret: " + uret.toFixed(4))
         return false
 
         // check mr condtion. remove

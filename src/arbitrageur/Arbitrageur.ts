@@ -11,7 +11,7 @@ import { Service } from "typedi"
 import config from "../configs/config.json"
 require('dotenv').config();
 
-//TESTING: block 55746888
+//TESTING: block SOLShort: 65131100, 55746888
 //TODO.REFACT put on utility function. Templetize
 const OP_USDC_ADDR = '0x7F5c764cBc14f9669B88837ca1490cCa17c31607'
 
@@ -289,7 +289,7 @@ async dbg_get_uret() {
             let wlt = this.ethService.privateKeyToWallet(this.pkMap.get(market.name)!)
             await this.closePosition( wlt!, market.baseToken) 
             let newcoll = await this.perpService.getFreeCollateral(wlt!.address)
-            newcoll = newcoll.div(10**6)
+            
             // LM loss Mitigation
             //const vault = this.perpService.createVault()
             // vault contract retrieving weird values. saw perp notes only their for compatibility.
@@ -336,7 +336,7 @@ async dbg_get_uret() {
             //const vault = this.perpService.createVault()
             //const newcollat = (await vault.getBalanceByToken(wlt.address, OP_USDC_ADDR)) / 10**6
             let newcoll = await this.perpService.getFreeCollateral(wlt!.address)
-            newcoll = newcoll.div(10**6)
+
             // TODO.NXT wdraw TP_PEXIT_WITHDRAWL .10
             //const TP_WITHDRAWL = 0.98
             //let rstlev = 1/(config.RESET_MARGIN_RATIO)

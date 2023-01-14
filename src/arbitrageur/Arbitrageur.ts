@@ -13,6 +13,12 @@ require('dotenv').config();
 
 //TESTING: block SOLShort: 65131100, 55746888
 //TODO.REFACT put on utility function. Templetize
+const TP_MIN_MR    = 0.12  // 8.33x
+const TP_MR_DEC_SZ = 0.02
+const TP_MAX_MR    = 0.50 
+const TP_MR_INC_SZ = 0.03  // OJO you INC onStopLoss 5x
+
+// below not used remove
 const OP_USDC_ADDR = '0x7F5c764cBc14f9669B88837ca1490cCa17c31607'
 
 type Wallet = ethers.Wallet
@@ -34,7 +40,7 @@ interface Market {
     minMarginRatio: number
     maxMarginRatio: number
     collateral: number
-    resetLeverage: number
+    leverage: number
 // TODO.RMV
 orderAmount: Big
 
@@ -132,7 +138,7 @@ async dbg_get_uret() {
                 minMarginRatio: market.MIN_MARGIN_RATIO,
                 maxMarginRatio: market.MAX_MARGIN_RATIO,
                 collateral: market.START_COLLATERAL,
-                resetLeverage: market.RESET_LEVERAGE
+                leverage: market.RESET_LEVERAGE
             }
         }
     }
@@ -247,10 +253,7 @@ async dbg_get_uret() {
         // check unrealizedReturn
         //TODO.NXT add pending funding to pnl
         // supportedvault func??? better useconst collatCurr = (await vault.getBalanceByToken(wlt.address, OP_USDC_ADDR)) / 10**6
-        //let coll = await this.perpService.getFreeCollateral(wlt!.address)
-        // KISS keep it simply smarty. 1+ (collatFinal - initial collat)/collat initial
-        // ret = 1 + [final- initial]/initialcurrcollat is == colInitial + pnl => 
-        // ret = 1 + [(colInitial + pnl)-colinitila]/colInitial == pnl/initial
+ 
         let collat = this.marketMap[mkt].collateral
         const upnl =  (await this.perpService.getOwedAndUnrealizedPnl(wlt.address)).unrealizedPnl
         //let uret = 1 + ((collatCurr + upnl.toNumber()) - collat)/collat
@@ -290,19 +293,19 @@ async dbg_get_uret() {
             await this.closePosition( wlt!, market.baseToken) 
             let newcoll = await this.perpService.getFreeCollateral(wlt!.address)
             
-            // LM loss Mitigation
-            //const vault = this.perpService.createVault()
-            // vault contract retrieving weird values. saw perp notes only their for compatibility.
-            // better use freecollat
+            
             //let newcoll = (await vault.getBalanceByToken(wlt.address, OP_USDC_ADDR)) / 10**6
             this.log.jinfo({ event: "lMit: ", params: { market: market.name, newColl: + newcoll }, })
             // TODO.NXT handle when absolute size below a minimum. $2 ? then mr=1
             // TODO.NXT wdraw TP_PEXIT_WITHDRAWL .10
             // TODO.NXT parametrize inconfig PEXIT and LEXIT
             //const TP_WITHDRAWL = 0.98
+
+            // deleverage
+            let mr = 1/this.marketMap[market.name].leverage
+            let newlvrj = 1/Math.min(TP_MAX_MR, mr + TP_MR_INC_SZ)
             
-            let rstlev = this.marketMap[market.name].resetLeverage
-            let reOpenSz = rstlev*newcoll.toNumber()
+            let reOpenSz = newlvrj*newcoll.toNumber()
             // TODO.STK  adjust default max gas fee is reasonable
             await this.openPosition(
                 wlt!,
@@ -316,7 +319,8 @@ async dbg_get_uret() {
             ) 
             this.marketMap[market.name].collateral = newcoll.toNumber()
             //let rsz = await this.perpService.getTotalPositionSize(wlt.address, market.baseToken)
-            //this.log.jinfo( {event: "Downscale", params: { market: market.name, sz: +rsz},} )
+            this.log.jinfo( {event: "backoff", params: { market: market.name, ncoll: +newcoll,
+                                                         nlvrj: newlvrj},} )
         }
         // --------------------------------------------------------------------------------------------
         // check if scale trigger
@@ -338,10 +342,12 @@ async dbg_get_uret() {
             let newcoll = await this.perpService.getFreeCollateral(wlt!.address)
 
             // TODO.NXT wdraw TP_PEXIT_WITHDRAWL .10
-            //const TP_WITHDRAWL = 0.98
-            //let rstlev = 1/(config.RESET_MARGIN_RATIO)
-            let rstlev = this.marketMap[market.name].resetLeverage
-            let reOpenSz = rstlev*newcoll.toNumber()
+
+            // releverage
+            let mr = 1/this.marketMap[market.name].leverage
+            let newlvrj = 1/Math.max(TP_MIN_MR, mr - TP_MR_DEC_SZ)
+
+            let reOpenSz = newlvrj*newcoll.toNumber()
             // TODO.STK  adjust default max gas fee is reasonable
             await this.openPosition(
                 wlt!,
@@ -355,7 +361,8 @@ async dbg_get_uret() {
             ) 
             //let rsz = await this.perpService.getTotalPositionSize(wlt.address, market.baseToken)
             this.marketMap[market.name].collateral = newcoll.toNumber()
-            this.log.jinfo( {event: "Rescale", params: { market: market.name, ncoll: +newcoll},} )
+            this.log.jinfo( {event: "Scale", params: { mkt: market.name, 
+                                                       nlevrj: newlvrj, ncoll: +newcoll},} )
         }
         
     }

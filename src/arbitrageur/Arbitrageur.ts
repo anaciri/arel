@@ -307,6 +307,7 @@ async dbg_get_uret() {
             
             let reOpenSz = newlvrj*newcoll.toNumber()
             // TODO.STK  adjust default max gas fee is reasonable
+            try {
             await this.openPosition(
                 wlt!,
                 market.baseToken,
@@ -317,6 +318,12 @@ async dbg_get_uret() {
                 undefined, // WAS: Big(config.BALANCE_MAX_GAS_FEE_ETH),
                 undefined, //was this.referralCode,
             ) 
+            }
+            catch (e: any) {
+                console.error(`FAILED OPEN: ${e.toString()}`)
+                console.log("MKT: " + market.name + " SZ: " + reOpenSz)
+            }
+            
             this.marketMap[market.name].collateral = newcoll.toNumber()
             //let rsz = await this.perpService.getTotalPositionSize(wlt.address, market.baseToken)
             this.log.jinfo( {event: "backoff", params: { market: market.name, ncoll: +newcoll,

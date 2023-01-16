@@ -60,7 +60,7 @@
       "internalConsoleOptions": "neverOpen"
     },
     {
-      "name": "set env",
+      "name": "bypass dotenv",
       "type": "node",
       "request": "launch",
       "args": [
@@ -68,7 +68,8 @@
       ],
       "env":{
         "L2_WEB3_ENDPOINTS":"http://127.0.0.1:8545",
-        "PRIVATE_KEY":"e61e18241225f08beeedb6806413ba5edc0ee2f97f25ad3eface04792a3b3451"
+        "vSOL_SHORT":"ea69cd89c97833a5a36098c0f231c21a5cd1f5af083878e870903a85efda7561"
+
       },
       "runtimeArgs": [
         "--nolazy",

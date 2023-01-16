@@ -1,20 +1,25 @@
-* install-build-run
+* install-build-config-run
 *install packages and build*
-sudo npm install -g npm@7.24.1
+npm install --save-dev npm@7.24.1
 npm install --save-dev typescript
 npm run build
+
+*edit configs and dotenv*
+- .env
+  L2_WEB3_ENDPOINTS=http://127.0.0.1:8545
+  # secrets
+  PRIVATE_KEY=blah
+
+
+- src/configs/config.json
+
+- mute noise BotService and PerpService
+cp mylibs/BotService.js node_modules/@perp/common/build/lib/perp/BotService.js
+cp mylibs/BotService.js node_modules/@perp/common/build/lib/eth/EthService.js
+
+*execute*
 env $(cat .env | grep -v '#' | xargs) npm run start
 
-
-*configs and dotenv*
-- .env
-L2_WEB3_ENDPOINTS=http://127.0.0.1:8545
-# secrets
-PRIVATE_KEY=blah
-
-
-- basetoken config
-src/configs/config.json
 
 
 ** run from debugger
@@ -37,7 +42,7 @@ launch.json
         "ts-node/register"
       ],
 
-* environment setup
+* hardhat environment setup
 **setup hardhat fork**
 - install hardhat in a local directory
 cd /Users/ayb/mio/code/tinker/dft/hh
@@ -86,3 +91,30 @@ export default config;
 npx hardhat node --fork 
 https://opt-mainnet.g.alchemy.com/v2/oH4_c4rONzDHSXUvSdFpuXAmgMpvsQIi  
 --fork-block-number 30306622
+* WORKFLOWS
+** test-n-deploy in DO
+- s
+  - [ ] git commit src/arbitrageur/Arbitrageur.ts -m blah
+  - [ ] git push origin qa
+  - [ ] DO: git pull
+
+*** debuger-hardhat testing
+- s
+  - [ ] scenario: SOLshort at 65131100
+    - [ ] pair: (0x7Ca51ce88195eD6a2C7289DD1B286a713fbD806b,
+    - [ ] uret: 0.9567
+  - [ ] trigger onLoss, onScale by chaning MIN_RET/MAX_RET 96/95
+  - [ ] hardhat supports only one signer. use 'bypass dotenv' debug config using only one
+  - [ ] config turn false everything xcept solshort
+
+*** qa testing
+- i
+  - [ ] use single name, low lev but high sensitivity  e.g .98, 1.02 to force logic at low cost
+* GOTCHAS
+** debugger acting weird
+- prob: e.g disappering or breaking in wrong place. 
+- remedy: delete all breakpoints and set again. stop debugger. save and restart
+
+** hardhat limitations
+- hardhat use only one signer (first account on the config) can only test one market
+at a time

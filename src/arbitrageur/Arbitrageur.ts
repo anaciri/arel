@@ -43,9 +43,11 @@ interface Market {
     maxMarginRatio: number
     collateral: number
     leverage: number
+    resetNeeded:boolean
+    resetSize: number
 // TODO.RMV
 orderAmount: Big
-resetNeeded:boolean
+
 }
 
 const DUST_USD_SIZE = Big(100)
@@ -141,7 +143,8 @@ async dbg_get_uret() {
                 maxMarginRatio: market.MAX_MARGIN_RATIO,
                 collateral: market.START_COLLATERAL,
                 leverage: market.RESET_LEVERAGE,
-                resetNeeded: false
+                resetNeeded: false,
+                resetSize:0
             }
         }
     }
@@ -290,18 +293,21 @@ async dbg_get_uret() {
             this.marketMap[mkt].resetNeeded = false
         }
         else {
+            // last open attempt failed. 
             let side = mkt.endsWith("SHORT") ? Side.SHORT : Side.LONG
-            let coll = await this.perpService.getFreeCollateral(wlt!.address)
-            this.log.jinfo({ event: "RESET: ", params: { market: mkt, newColl: + coll }, })
-            let reOpenSz = this.marketMap[mkt].leverage*coll.toNumber()
-
+            //let coll = await this.perpService.getFreeCollateral(wlt!.address)
+            //let reOpenSz = this.marketMap[mkt].leverage*coll.toNumber()
+            // ensure you are carrying the attempted leverjing from failed open
+            let reOpenSz = this.marketMap[mkt].resetSize
             // try, again to open position
             try {
                 // flag main routine to reset if open fails again
+                console.log("RESET ATTEMPT...")
                 await this.openPosition(
                     wlt!, bt, side, AmountType.QUOTE,
                     Big(reOpenSz),undefined, undefined, undefined
                 ) 
+                this.log.jinfo({ event: "RESET: ", params: { market: mkt, size: + reOpenSz }, })
                 // OK. it worked set back to false
                 this.marketMap[mkt].resetNeeded = false
             }
@@ -359,21 +365,24 @@ async dbg_get_uret() {
             catch (e: any) {
                 console.error(`FAILED OPEN: ${e.toString()}`)
                 console.log("Retrying open for MKT: " + market.name + " SZ: " + reOpenSz)
-                // flag main routine to reset if open fails again
-                // so at start of routine will try again
-                market.resetNeeded = true
-                await this.openPosition(
-                    wlt!, market.baseToken, side, AmountType.QUOTE,
-                    Big(reOpenSz),undefined, undefined, undefined
-                ) 
-                // OK. it worked set back to false
-                market.resetNeeded = false
-
+                
+                try {  // UGLY nested try catch
+                    let r = await this.openPosition(
+                        wlt!, market.baseToken, side, AmountType.QUOTE,
+                        Big(reOpenSz),undefined, undefined, undefined)
+                    }
+                    catch(e: any) {
+                        console.log("GIVING UP. delegate to checkReset()")
+                        // flag main routine to reset if open fails again
+                        // so at start of routine will try again
+                        market.resetNeeded = true
+                        market.resetSize = reOpenSz
+                    }
             }
             
             this.marketMap[market.name].collateral = newcoll.toNumber()
             //let rsz = await this.perpService.getTotalPositionSize(wlt.address, market.baseToken)
-            this.log.jinfo( {event: "backoff", params: { market: market.name, ncoll: +newcoll,
+            this.log.jinfo( {event: "Backoff", params: { market: market.name, ncoll: +newcoll,
                                                          nlvrj: newlvrj},} )
         }
         // --------------------------------------------------------------------------------------------

@@ -4,8 +4,10 @@ import { sleep } from "@perp/common/build/lib/helper"
 import { Log } from "@perp/common/build/lib/loggers"
 import { BotService } from "@perp/common/build/lib/perp/BotService"
 import { AmountType, Side } from "@perp/common/build/lib/perp/PerpService"
+import { CollateralManager } from "@perp/common/build/types/curie"
 import Big from "big.js"
 import { ethers } from "ethers"
+import { padEnd } from "lodash"
 import { Service } from "typedi"
 
 import config from "../configs/config.json"
@@ -43,8 +45,7 @@ interface Market {
     leverage: number
 // TODO.RMV
 orderAmount: Big
-
-
+resetNeeded:boolean
 }
 
 const DUST_USD_SIZE = Big(100)
@@ -56,6 +57,7 @@ export class Arbitrageur extends BotService {
     //private wallet!: ethers.Wallet
     // pkMap<market,pk>
     //private pkMap = new Map<string,string>([...Object.entries(pkconfig.PK_MAP)])
+    private resetMap = new Map<string, boolean>()
     private pkMap = new Map<string, string>()
     private marketMap: { [key: string]: Market } = {}
     private readonly arbitrageMaxGasFeeEth = Big(config.ARBITRAGE_MAX_GAS_FEE_ETH)
@@ -138,7 +140,8 @@ async dbg_get_uret() {
                 minMarginRatio: market.MIN_MARGIN_RATIO,
                 maxMarginRatio: market.MAX_MARGIN_RATIO,
                 collateral: market.START_COLLATERAL,
-                leverage: market.RESET_LEVERAGE
+                leverage: market.RESET_LEVERAGE,
+                resetNeeded: false
             }
         }
     }
@@ -277,8 +280,43 @@ async dbg_get_uret() {
          */
     }
    
+    private async resetCheck(mkt: string) {
+        // loop through failed open. double check again and try reopen
+        let wlt = this.ethService.privateKeyToWallet(this.pkMap.get(mkt)!)
+        let bt = this.marketMap[mkt].baseToken
+        let posz = await this.perpService.getTotalPositionSize(wlt.address, bt)
+        if (posz.toNumber() !=0  ) {
+            // false alarm
+            this.marketMap[mkt].resetNeeded = false
+        }
+        else {
+            let side = mkt.endsWith("SHORT") ? Side.SHORT : Side.LONG
+            let coll = await this.perpService.getFreeCollateral(wlt!.address)
+            this.log.jinfo({ event: "RESET: ", params: { market: mkt, newColl: + coll }, })
+            let reOpenSz = this.marketMap[mkt].leverage*coll.toNumber()
+
+            // try, again to open position
+            try {
+                // flag main routine to reset if open fails again
+                await this.openPosition(
+                    wlt!, bt, side, AmountType.QUOTE,
+                    Big(reOpenSz),undefined, undefined, undefined
+                ) 
+                // OK. it worked set back to false
+                this.marketMap[mkt].resetNeeded = false
+            }
+            catch (e: any) {
+                console.error(`FAILED RESET: ${e.toString()}`)
+            }
+        }
+    }
+
 
     async arbitrage(market: Market) {
+        //-----------------------------------------------------------------
+        // check if reset is needed
+        //-----------------------------------------
+        this.resetCheck(market.name)
         // --------------------------------------------------------------------------------------------
         // check if stop loss
         // AYB.REFACTOR repetitive code. move to butil?
@@ -287,13 +325,12 @@ async dbg_get_uret() {
         {
             this.log.jinfo({ event: "stop loss trigger", params: { market: market.name }, })
             let side = market.name.endsWith("SHORT") ? Side.SHORT : Side.LONG
-            // re-open at reset margin
+            
             //TODO.OPTIMIZE avoid keep calculating wallet
             let wlt = this.ethService.privateKeyToWallet(this.pkMap.get(market.name)!)
             await this.closePosition( wlt!, market.baseToken) 
             let newcoll = await this.perpService.getFreeCollateral(wlt!.address)
-            
-            
+                        
             //let newcoll = (await vault.getBalanceByToken(wlt.address, OP_USDC_ADDR)) / 10**6
             this.log.jinfo({ event: "lMit: ", params: { market: market.name, newColl: + newcoll }, })
             // TODO.NXT handle when absolute size below a minimum. $2 ? then mr=1
@@ -321,7 +358,17 @@ async dbg_get_uret() {
             }
             catch (e: any) {
                 console.error(`FAILED OPEN: ${e.toString()}`)
-                console.log("MKT: " + market.name + " SZ: " + reOpenSz)
+                console.log("Retrying open for MKT: " + market.name + " SZ: " + reOpenSz)
+                // flag main routine to reset if open fails again
+                // so at start of routine will try again
+                market.resetNeeded = true
+                await this.openPosition(
+                    wlt!, market.baseToken, side, AmountType.QUOTE,
+                    Big(reOpenSz),undefined, undefined, undefined
+                ) 
+                // OK. it worked set back to false
+                market.resetNeeded = false
+
             }
             
             this.marketMap[market.name].collateral = newcoll.toNumber()

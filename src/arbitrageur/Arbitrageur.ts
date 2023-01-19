@@ -283,6 +283,7 @@ async dbg_get_uret() {
          */
     }
    
+    /*
     private async resetCheck(mkt: string) {
         // loop through failed open. double check again and try reopen
         let wlt = this.ethService.privateKeyToWallet(this.pkMap.get(mkt)!)
@@ -315,14 +316,14 @@ async dbg_get_uret() {
                 console.error(`FAILED RESET: ${e.toString()}`)
             }
         }
-    }
+    }*/
 
 
     async arbitrage(market: Market) {
         //-----------------------------------------------------------------
         // check if reset is needed
         //-----------------------------------------
-        this.resetCheck(market.name)
+        //this.resetCheck(market.name)
         // --------------------------------------------------------------------------------------------
         // check if stop loss
         // AYB.REFACTOR repetitive code. move to butil?
@@ -352,20 +353,17 @@ async dbg_get_uret() {
             // TODO.STK  adjust default max gas fee is reasonable
             try {
             await this.openPosition(
-                wlt!,
-                market.baseToken,
-                side,
-                AmountType.QUOTE,
-                Big(reOpenSz),
-                undefined,
-                undefined, // WAS: Big(config.BALANCE_MAX_GAS_FEE_ETH),
-                undefined, //was this.referralCode,
-            ) 
+                wlt!, market.baseToken,side,AmountType.QUOTE,Big(reOpenSz),undefined,undefined,undefined)
             }
             catch (e: any) {
                 console.error(`FAILED OPEN: ${e.toString()}`)
-                console.log("Retrying open for MKT: " + market.name + " SZ: " + reOpenSz)
+                this.ethService.rotateToNextEndpoint()
+                console.log("RETRY OPEN")
+                await this.openPosition( wlt!, market.baseToken,side,AmountType.QUOTE,
+                                         Big(reOpenSz),undefined,undefined,undefined )
+    
                 
+                /*
                 try {  // UGLY nested try catch
                     let r = await this.openPosition(
                         wlt!, market.baseToken, side, AmountType.QUOTE,
@@ -377,7 +375,7 @@ async dbg_get_uret() {
                         // so at start of routine will try again
                         market.resetNeeded = true
                         market.resetSize = reOpenSz
-                    }
+                    }*/
             }
             
             this.marketMap[market.name].collateral = newcoll.toNumber()

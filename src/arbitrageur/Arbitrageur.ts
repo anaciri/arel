@@ -410,6 +410,7 @@ async dbg_get_uret() {
 
             let reOpenSz = newlvrj*newcoll.toNumber()
             // TODO.STK  adjust default max gas fee is reasonable
+            try {
             await this.openPosition(
                 wlt!,
                 market.baseToken,
@@ -420,8 +421,16 @@ async dbg_get_uret() {
                 undefined, // WAS: Big(config.BALANCE_MAX_GAS_FEE_ETH),
                 undefined, //was this.referralCode,
             ) 
+            }
+            catch (e: any) {
+                console.error(`Scale: FAILED OPEN: ${e.toString()}`)
+                this.ethService.rotateToNextEndpoint()
+                console.log("RETRY OPEN")
+                await this.openPosition( wlt!, market.baseToken,side,AmountType.QUOTE,
+                                         Big(reOpenSz),undefined,undefined,undefined )
             //let rsz = await this.perpService.getTotalPositionSize(wlt.address, market.baseToken)
             this.marketMap[market.name].collateral = newcoll.toNumber()
+                }
             this.log.jinfo( {event: "Scale", params: { mkt: market.name, 
                                                        nlevrj: newlvrj, ncoll: +newcoll},} )
         }

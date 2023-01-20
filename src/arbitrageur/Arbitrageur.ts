@@ -18,7 +18,7 @@ require('dotenv').config();
 const TP_MIN_MR    = 0.12  // 8.33x
 const TP_MR_DEC_SZ = 0.02
 const TP_MAX_MR    = 0.50 
-const TP_MR_INC_SZ = 0.03  // OJO you INC onStopLoss 5x
+const TP_MR_INC_SZ = 0.02  // OJO you INC onStopLoss 5x
 
 // below not used remove
 const OP_USDC_ADDR = '0x7F5c764cBc14f9669B88837ca1490cCa17c31607'

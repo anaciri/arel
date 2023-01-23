@@ -357,6 +357,10 @@ async dbg_get_uret() {
             let wlt = this.ethService.privateKeyToWallet(this.pkMap.get(market.name)!)
             await this.closePosition( wlt!, market.baseToken) 
             let newcoll = await this.perpService.getFreeCollateral(wlt!.address)
+
+            // update cummulative loss
+            let loss = newcoll.toNumber() - config.TP_START_CAP
+            this.marketMap[market.name].cummulativeLoss = this.marketMap[market.name].cummulativeLoss + loss
                         
             //let newcoll = (await vault.getBalanceByToken(wlt.address, OP_USDC_ADDR)) / 10**6
             this.log.jinfo({ event: "lMit: ", params: { market: market.name, newColl: + newcoll }, })

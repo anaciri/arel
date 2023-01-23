@@ -262,7 +262,20 @@ async dbg_get_uret() {
  
         let collat = this.marketMap[mkt].collateral
         const upnl =  (await this.perpService.getOwedAndUnrealizedPnl(wlt.address)).unrealizedPnl
-        //let uret = 1 + ((collatCurr + upnl.toNumber()) - collat)/collat
+
+            // check if breached TP_MAX_ROLL_LOSS => disable mkt and exit block
+            let capz = config.TP_START_CAP
+            let ret = 1 + ((capz + upnl.toNumber())-capz)/capz
+
+            if (ret < config.TP_MAX_ROLL_LOSS ) {
+                await this.closePosition( wlt!, this.marketMap[mkt].baseToken) 
+                delete this.marketMap[mkt]
+                console.log(mkt + ": MAX_LOSS_ROLL reached. removed")
+                //TODO. HACK need to refactor
+                return false
+            }
+
+
         let uret = 1 + upnl.toNumber()/collat
 
         if( uret < this.marketMap[mkt].minReturn ){ 
@@ -345,7 +358,7 @@ async dbg_get_uret() {
             // TODO.NXT parametrize inconfig PEXIT and LEXIT
             //const TP_WITHDRAWL = 0.98
 
-            // deleverage
+             // deleverage
             let mr = 1/this.marketMap[market.name].leverage
             let newlvrj = 1/Math.min(TP_MAX_MR, mr + TP_MR_INC_SZ)
             

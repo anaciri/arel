@@ -33,6 +33,7 @@ function transformValues(map: Map<string, string>,
   
 
 interface Market {
+    
     name: string
     baseToken: string
     poolAddr: string
@@ -45,6 +46,7 @@ interface Market {
     leverage: number
     resetNeeded:boolean
     resetSize: number
+    cummulativeLoss: number
 // TODO.RMV
 orderAmount: Big
 
@@ -143,6 +145,8 @@ async dbg_get_uret() {
                 maxMarginRatio: market.MAX_MARGIN_RATIO,
                 collateral: market.START_COLLATERAL,
                 leverage: market.RESET_LEVERAGE,
+                cummulativeLoss: 0,
+                //TODO.rmv
                 resetNeeded: false,
                 resetSize:0
             }
@@ -261,11 +265,13 @@ async dbg_get_uret() {
         // supportedvault func??? better useconst collatCurr = (await vault.getBalanceByToken(wlt.address, OP_USDC_ADDR)) / 10**6
  
         let collat = this.marketMap[mkt].collateral
-        const upnl =  (await this.perpService.getOwedAndUnrealizedPnl(wlt.address)).unrealizedPnl
+        const upnl =  (await this.perpService.getOwedAndUnrealizedPnl(wlt.address)).unrealizedPnl.toNumber()
 
             // check if breached TP_MAX_ROLL_LOSS => disable mkt and exit block
-            let capz = config.TP_START_CAP
-            let ret = 1 + ((capz + upnl.toNumber())-capz)/capz
+            if (upnl < 0) { 
+                let capz = config.TP_START_CAP
+                let cumloss = this.marketMap[mkt].cummulativeLoss + upnl
+                let ret = 1 + ( (capz + cumloss) -capz )/capz
 
             if (ret < config.TP_MAX_ROLL_LOSS ) {
                 await this.closePosition( wlt!, this.marketMap[mkt].baseToken) 
@@ -274,9 +280,10 @@ async dbg_get_uret() {
                 //TODO. HACK need to refactor
                 return false
             }
+        }
 
 
-        let uret = 1 + upnl.toNumber()/collat
+        let uret = 1 + upnl/collat
 
         if( uret < this.marketMap[mkt].minReturn ){ 
             console.log(mkt + " LMit: "+ mkt + "pnl: " + upnl)

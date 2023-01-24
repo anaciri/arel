@@ -30,19 +30,19 @@ function transformValues(map: Map<string, string>,
     map.forEach((value, key) => { result.set(key, func(value));});
     return result;
   }
-  
+  // NOTE: START_COLLATERAL, collateral and peakcollateral: collat is the 'real collat' init to START_COLLATERAL and update on
+  // scale down/up. virtual collateral is the 'peak' unrealized collateral
 
 interface Market {
-    
     name: string
     baseToken: string
     poolAddr: string
-    
     minReturn: number
     maxReturn: number
     minMarginRatio: number
     maxMarginRatio: number
     collateral: number
+    peakCollateral: number
     leverage: number
     resetNeeded:boolean
     resetSize: number
@@ -144,6 +144,7 @@ async dbg_get_uret() {
                 minMarginRatio: market.MIN_MARGIN_RATIO,
                 maxMarginRatio: market.MAX_MARGIN_RATIO,
                 collateral: market.START_COLLATERAL,
+                peakCollateral: market.START_COLLATERAL,
                 leverage: market.RESET_LEVERAGE,
                 cummulativeLoss: 0,
                 //TODO.rmv
@@ -240,7 +241,7 @@ async dbg_get_uret() {
         return marginRatio !== null && marginRatio.gt(criterion)
     }*/
 
-    /*private async isStopLoss(mkt: string) {
+    /*private async isStopLoss (mkt: string) {
         let criterion = this.marketMap[mkt].lexitTresh
         let wlt = this.ethService.privateKeyToWallet(this.pkMap.get(mkt)!)
         const marginRatio = await this.perpService.getMarginRatio(wlt.address)
@@ -252,7 +253,7 @@ async dbg_get_uret() {
     // stop loss on EITHER unrealizedReturn or exit from margin band (default:10-2: 8 )
     // using max lev simplifies collat tracking. always == usdc balance on vault
     //-----------------------------------------------------------------------------------
-    
+    // TODO.Refactor private async isStopLoss(mkt: string, upnl) didod for isTresh
     private async isStopLoss(mkt: string): Promise<boolean> {
         
         //const OP_USDC_ADDR = '0x7F5c764cBc14f9669B88837ca1490cCa17c31607'
@@ -264,27 +265,39 @@ async dbg_get_uret() {
         //TODO.NXT add pending funding to pnl
         // supportedvault func??? better useconst collatCurr = (await vault.getBalanceByToken(wlt.address, OP_USDC_ADDR)) / 10**6
  
-        let collat = this.marketMap[mkt].collateral
+        
         const upnl =  (await this.perpService.getOwedAndUnrealizedPnl(wlt.address)).unrealizedPnl.toNumber()
+        // --- Check if peakCollateral needs to be updtate. Wrong place i know, refactor into main routine
+        let collat = this.marketMap[mkt].collateral
+        let pcoll =  this.marketMap[mkt].peakCollateral
+
+        if ( (pcoll > collat) && (upnl > 0) ) {
+            if ( collat + upnl* config.TP_EXECUTION_HAIRCUT > pcoll) {
+                this.marketMap[mkt].peakCollateral += upnl*config.TP_EXECUTION_HAIRCUT
+                console.log("INFO: peakCollat updated = " + this.marketMap[mkt].peakCollateral)
+            }
+        }
 
             // check if breached TP_MAX_ROLL_LOSS => disable mkt and exit block
-            if (upnl < 0) { 
-                let capz = config.TP_START_CAP
-                let cumloss = this.marketMap[mkt].cummulativeLoss + upnl
-                let ret = 1 + ( (capz + cumloss) -capz )/capz
+            // use peakCollateral only if you have cleared the start seed
+
+        //--- Only If already in profitable zone use the peak collat as basis. else ignore peak collateral 
+        let basis = (collat > config.TP_START_CAP) ? this.marketMap[mkt].peakCollateral : collat
+        //--- Check if exceeded max absolute loss relative to initial seed
+        if (upnl < 0) { 
+            let cumloss = this.marketMap[mkt].cummulativeLoss + upnl
+            let ret = 1 + ( (basis + cumloss) -basis )/basis
 
             if (ret < config.TP_MAX_ROLL_LOSS ) {
                 await this.closePosition( wlt!, this.marketMap[mkt].baseToken) 
                 delete this.marketMap[mkt]
-                console.log(mkt + ": MAX_LOSS_ROLL reached. removed")
-                //TODO. HACK need to refactor
+                console.log(mkt + ": MAX_LOSS_ROLL reached. CumLoss " + cumloss)
+                //TODO. HACK to exit loop. need to refactor
                 return false
             }
         }
 
-
         let uret = 1 + upnl/collat
-
         if( uret < this.marketMap[mkt].minReturn ){ 
             console.log(mkt + " LMit: "+ mkt + "pnl: " + upnl)
             return true
@@ -410,7 +423,8 @@ async dbg_get_uret() {
         // --------------------------------------------------------------------------------------------
         // check if scale trigger
         // --------------------------------------------------------------------------------------------
- 
+        // --- OJO: the key may have been removed  bcoz of MAX_ROLL_LOSS, but dont want to check
+        // relying on the if statement evaluating to false for undefined
         if ( await this.isScaleTresh(market.name)) 
         {
             this.log.jinfo({ event: "scale trigger", params: { market: market.name }, })

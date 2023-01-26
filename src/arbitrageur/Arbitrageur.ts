@@ -408,6 +408,8 @@ async dbg_get_uret() {
                 console.log(ts + ",LMit:" + market.name +  "prft:" + actualProfit.toFixed(4) + 
                             " cumLoss:" + fcloss.toFixed(4) + " ccollat: " + fcol.toFixed(4))
             }
+            // beats
+            console.log(market.name + ": pnl: " + upnl.toFixed(4) + " uret: " + uret.toFixed(4) + " lvrj: " + lvrj)
             }
     
         //--- Print info: pnl, returns

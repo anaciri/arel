@@ -214,9 +214,9 @@ async dbg_get_uret() {
         // TODO.OPTM make it a this param
         const vault = this.perpService.createVault()
         //const collatCurr = (await vault.getBalanceByToken(wlt.address, OP_USDC_ADDR)) / 10**6
-        //TODO.NXT add pending funding to pnl
+        //TODO.NXT add pending funding to p
         //let uret = (collat + upnl.toNumber())/collat
-        //------------- common
+        //------------- commonif
 
         // check if excessive positive unrealizedReturn i.e approaching DC deceleration of compounding rate
         let collat = this.marketMap[mkt].collateral
@@ -233,27 +233,7 @@ async dbg_get_uret() {
         //return mr !== null && mr.gt(mmr)
     }
 
-    /*private async isScaleTresh(mkt: string) {
-        let criterion = this.marketMap[mkt].maxMarginRatio
-        let wlt = this.ethService.privateKeyToWallet(this.pkMap.get(mkt)!)
-        const marginRatio = await this.perpService.getMarginRatio(wlt.address)
-        //this.log.jinfo({ event: "mr", params: { marginRatio: marginRatio === null ? null : +marginRatio },})
-        return marginRatio !== null && marginRatio.gt(criterion)
-    }*/
 
-    /*private async isStopLoss (mkt: string) {
-        let criterion = this.marketMap[mkt].lexitTresh
-        let wlt = this.ethService.privateKeyToWallet(this.pkMap.get(mkt)!)
-        const marginRatio = await this.perpService.getMarginRatio(wlt.address)
-        this.log.jinfo({ event: "mr", params: { marginRatio: marginRatio === null ? null : +marginRatio },})
-        return marginRatio !== null && marginRatio.lt(criterion)
-    }*/
-
-    //-----------------------------------------------------------------------------------
-    // stop loss on EITHER unrealizedReturn or exit from margin band (default:10-2: 8 )
-    // using max lev simplifies collat tracking. always == usdc balance on vault
-    //-----------------------------------------------------------------------------------
-    // TODO.Refactor private async isStopLoss(mkt: string, upnl) didod for isTresh
     private async isStopLoss(mkt: string): Promise<boolean> {
         
         //const OP_USDC_ADDR = '0x7F5c764cBc14f9669B88837ca1490cCa17c31607'
@@ -291,7 +271,7 @@ async dbg_get_uret() {
             if (ret < config.TP_MAX_ROLL_LOSS ) {
                 await this.closePosition( wlt!, this.marketMap[mkt].baseToken) 
                 delete this.marketMap[mkt]
-                console.log(mkt + ": MAX_LOSS_ROLL reached. CumLoss " + cumloss)
+                console.log("INFO: " + mkt + "MAX_LOSS_ROLL reached. CumLoss " + cumloss)
                 //TODO. HACK to exit loop. need to refactor
                 return false
             }
@@ -305,62 +285,111 @@ async dbg_get_uret() {
         console.log(mkt + ": pnl: " + upnl.toFixed(4) + " uret: " + uret.toFixed(4))
         return false
 
-        // check mr condtion. remove
-        /*
-        const mmr = this.marketMap[mkt].minMarginRatio
-        const mr = await this.perpService.getMarginRatio(wlt.address)
-        //TODO.BKL support eth collat collTokens =  await vault.getCollateralTokens(wlt.address)
-
-        console.log(mkt + ": uret:" + uret.toPrecision(4) + " mr:" + mr?.toPrecision(4) )
-        return mr !== null && mr.lt(mmr)
-         */
     }
    
-    /*
-    private async resetCheck(mkt: string) {
-        // loop through failed open. double check again and try reopen
-        let wlt = this.ethService.privateKeyToWallet(this.pkMap.get(mkt)!)
-        let bt = this.marketMap[mkt].baseToken
-        let posz = await this.perpService.getTotalPositionSize(wlt.address, bt)
-        if (posz.toNumber() !=0  ) {
-            // false alarm
-            this.marketMap[mkt].resetNeeded = false
+ // TODO move to butil file
+ async open(wlt: ethers.Wallet, btoken: string, side: Side, usdAmount: number ) {
+    try {
+        await this.openPosition(wlt!, btoken ,side,AmountType.QUOTE,Big(usdAmount),undefined,undefined,undefined)
         }
-        else {
-            // last open attempt failed. 
-            let side = mkt.endsWith("SHORT") ? Side.SHORT : Side.LONG
-            //let coll = await this.perpService.getFreeCollateral(wlt!.address)
-            //let reOpenSz = this.marketMap[mkt].leverage*coll.toNumber()
-            // ensure you are carrying the attempted leverjing from failed open
-            let reOpenSz = this.marketMap[mkt].resetSize
-            // try, again to open position
-            try {
-                // flag main routine to reset if open fails again
-                console.log("RESET ATTEMPT...")
-                await this.openPosition(
-                    wlt!, bt, side, AmountType.QUOTE,
-                    Big(reOpenSz),undefined, undefined, undefined
-                ) 
-                this.log.jinfo({ event: "RESET: ", params: { market: mkt, size: + reOpenSz }, })
-                // OK. it worked set back to false
-                this.marketMap[mkt].resetNeeded = false
-            }
-            catch (e: any) {
-                console.error(`FAILED RESET: ${e.toString()}`)
-            }
+        catch (e: any) {
+            console.error(`ERROR: FAILED OPEN. Rotating endpoint: ${e.toString()}`)
+            this.ethService.rotateToNextEndpoint()
+            await this.openPosition( wlt!,btoken,side,AmountType.QUOTE, Big(usdAmount),undefined,undefined,undefined )
+            console.log("Re-oppened...")
         }
-    }*/
+ }
 
-
+ async close(wlt: ethers.Wallet, btoken: string) {
+    try {
+        await this.closePosition(wlt!, btoken, undefined,undefined,undefined)
+        }
+        catch (e: any) {
+            console.error(`ERROR: FAILED CLOSE. Rotating endpoint: ${e.toString()}`)
+            this.ethService.rotateToNextEndpoint()
+            await this.closePosition(wlt!, btoken, undefined,undefined,undefined)
+            console.log("closed...")
+        }
+ }
+ 
     async arbitrage(market: Market) {
-        //-----------------------------------------------------------------
-        // check if reset is needed
-        //-----------------------------------------
-        //this.resetCheck(market.name)
-        // --------------------------------------------------------------------------------------------
-        // check if stop loss
-        // AYB.REFACTOR repetitive code. move to butil?
-        // --------------------------------------------------------------------------------------------
+        // TODO.OPTM make it a this param
+        //const vault = this.perpService.createVault()
+
+        //--- Get pnl/free collat
+        //--- factor out to avoid recomputing unnecesary on most cycles
+        let wlt = this.ethService.privateKeyToWallet(this.pkMap.get(market.name)!)
+        let freec = (await this.perpService.getFreeCollateral(wlt!.address)).toNumber()
+        const upnl = (await this.perpService.getOwedAndUnrealizedPnl(wlt.address)).unrealizedPnl.toNumber()
+        let side = market.name.endsWith("SHORT") ? Side.SHORT : Side.LONG
+        let offsetSide = (side == Side.SHORT) ? Side.LONG : Side.SHORT
+        //let offsetSide = side.endsWith("SHORT") ? Side.LONG : Side.SHORT
+        // current collateral needed to compute actual loss to add to cumulative loss. mr = [upnl + collat]/position value
+        let posVal = (await this.perpService.getTotalAbsPositionValue(wlt.address)).toNumber()
+        let mr = await this.perpService.getMarginRatio(wlt.address)
+        let currCollat = mr?.mul(posVal).minus(upnl)
+        let lvrj = this.marketMap[market.name].leverage
+
+        let usdAmount = null
+        let newcoll = null // collateral after reducing/closing criteria meeting mir
+        let actualLoss = null
+        
+        //--------------------------------------------------------------------------------------------------------------------
+        //   Handle negative pnl 
+        //--------------------------------------------------------------------------------------------------------------------
+        if (upnl < 0) {
+        //---- check for mir (loss mitigation)
+        let uret = 1 + upnl/this.marketMap[market.name].collateral
+
+        if( uret < this.marketMap[market.name].minReturn ){ 
+            let newlvrj = config.TP_DELEVERAGE_FACTOR*lvrj
+            let adjLoss = upnl/config.TP_EXECUTION_HAIRCUT
+            
+            if (freec > Math.abs(adjLoss) ) { //--- reduce position if enough freec --
+                await this.open(wlt!,this.marketMap[market.name].baseToken,offsetSide,adjLoss*newlvrj)
+                //compute change in coll (loss) [(mr*posVal-pnl), where pnl = 0 right after open] - collzero
+                let mr = (await this.perpService.getMarginRatio(wlt.address))!.toNumber()
+                actualLoss = mr!*posVal - this.marketMap[market.name].collateral
+            }
+            else { //---- insufficient freec. close and reopen
+                   await this.close( wlt!, market.baseToken) 
+                   //compute actual loss using current collat == free collateral
+                   let ccollat = (await this.perpService.getFreeCollateral(wlt!.address)).toNumber()
+                   actualLoss = ccollat - this.marketMap[market.name].collateral
+                   //delverage reopen 
+                   this.open(wlt!, this.marketMap[market.name].baseToken,side,ccollat*newlvrj)
+                   console.log("INFO, Reopen" +"," + market.name)
+            }
+            // update collateral and cumulative loss
+            let fcol = this.marketMap[market.name].collateral += actualLoss
+            let fcloss = this.marketMap[market.name].cummulativeLoss += actualLoss
+
+            //let rsz = await this.perpService.getTotalPositionSize(wlt.address, market.baseToken)
+            //--- print time, actual loss, newcoll, cumLoss
+            
+            let ts = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
+            console.log(ts + ",LMit: " + market.name +  "aloss:" + actualLoss.toFixed(4) + 
+                        " cumLoss:" + fcloss.toFixed(4) + " ccollat: " + fcol.toFixed(4))
+        }
+        }
+
+
+        if (upnl > 0 ) {
+        //--- Handle positive pnl
+
+        //---- check if unrialized collat needs to be raised aka virtual collat
+        
+
+        //---- check for rescale condition aka mar
+
+
+        //---- add to the position or reopen if insufficient freec
+        }
+
+        //--- Print info: pnl, returns
+            /*
+        console.log("INFO: " + mkt + ": pnl: " + upnl.toFixed(4) + " uret: " + uret.toFixed(4))
+    
         if ( await this.isStopLoss(market.name)) 
         {
             this.log.jinfo({ event: "stop loss trigger", params: { market: market.name }, })
@@ -389,30 +418,13 @@ async dbg_get_uret() {
             let reOpenSz = newlvrj*newcoll.toNumber()
             // TODO.STK  adjust default max gas fee is reasonable
             try {
-            await this.openPosition(
-                wlt!, market.baseToken,side,AmountType.QUOTE,Big(reOpenSz),undefined,undefined,undefined)
+            await this.openPosition(wlt!, market.baseToken,side,AmountType.QUOTE,Big(reOpenSz),undefined,undefined,undefined)
             }
             catch (e: any) {
                 console.error(`FAILED OPEN: ${e.toString()}`)
                 this.ethService.rotateToNextEndpoint()
                 console.log("RETRY OPEN")
-                await this.openPosition( wlt!, market.baseToken,side,AmountType.QUOTE,
-                                         Big(reOpenSz),undefined,undefined,undefined )
-    
-                
-                /*
-                try {  // UGLY nested try catch
-                    let r = await this.openPosition(
-                        wlt!, market.baseToken, side, AmountType.QUOTE,
-                        Big(reOpenSz),undefined, undefined, undefined)
-                    }
-                    catch(e: any) {
-                        console.log("GIVING UP. delegate to checkReset()")
-                        // flag main routine to reset if open fails again
-                        // so at start of routine will try again
-                        market.resetNeeded = true
-                        market.resetSize = reOpenSz
-                    }*/
+                await this.openPosition( wlt!, market.baseToken,side,AmountType.QUOTE, Big(reOpenSz),undefined,undefined,undefined )
             }
             
             this.marketMap[market.name].collateral = newcoll.toNumber()
@@ -420,6 +432,7 @@ async dbg_get_uret() {
             this.log.jinfo( {event: "Backoff", params: { market: market.name, ncoll: +newcoll,
                                                          nlvrj: newlvrj},} )
         }
+        */
         // --------------------------------------------------------------------------------------------
         // check if scale trigger
         // --------------------------------------------------------------------------------------------

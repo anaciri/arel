@@ -327,13 +327,12 @@ async dbg_get_uret() {
         // current collateral needed to compute actual loss to add to cumulative loss. mr = [upnl + collat]/position value
         let posVal = (await this.perpService.getTotalAbsPositionValue(wlt.address)).toNumber()
         let mr = await this.perpService.getMarginRatio(wlt.address)
-        let currCollat = mr?.mul(posVal).minus(upnl)
-        let lvrj = this.marketMap[market.name].leverage
-
-        let usdAmount = null
-        let newcoll = null // collateral after reducing/closing criteria meeting mir
-        let actualLoss = null
         
+        let lvrj = this.marketMap[market.name].leverage
+        let actualLoss = null
+        let actualProfit = null
+        
+
         //--------------------------------------------------------------------------------------------------------------------
         //   Handle negative pnl 
         //--------------------------------------------------------------------------------------------------------------------
@@ -368,24 +367,49 @@ async dbg_get_uret() {
             //--- print time, actual loss, newcoll, cumLoss
             
             let ts = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
-            console.log(ts + ",LMit: " + market.name +  "aloss:" + actualLoss.toFixed(4) + 
-                        " cumLoss:" + fcloss.toFixed(4) + " ccollat: " + fcol.toFixed(4))
+            console.log(ts + ",LMit: " + market.name + " aloss:" + actualLoss.toFixed(4) + 
+                        " cumLoss:" + fcloss.toFixed(4) + " ccollat:" + fcol.toFixed(4))
         }
         }
-
-
-        if (upnl > 0 ) {
-        //--- Handle positive pnl
-
-        //---- check if unrialized collat needs to be raised aka virtual collat
-        
-
-        //---- check for rescale condition aka mar
-
-
-        //---- add to the position or reopen if insufficient freec
-        }
-
+        //--------------------------------------------------------------------------------------------------------------------
+        //   Handle positive pnl 
+        //--------------------------------------------------------------------------------------------------------------------
+        if (upnl > 0) {
+            //---- check for mir (loss mitigation)
+            let uret = 1 + upnl/this.marketMap[market.name].collateral
+    
+            if( uret > this.marketMap[market.name].maxReturn ){ 
+                let newlvrj = config.TP_RELEVERAGE_FACTOR*lvrj
+                let adjRet = upnl/config.TP_EXECUTION_HAIRCUT
+                
+                if (freec > Math.abs(adjRet) ) { //--- reduce position if enough freec --
+                    await this.open(wlt!,this.marketMap[market.name].baseToken,offsetSide,adjRet*newlvrj)
+                    //compute change in coll (abs return) [(mr*posVal-pnl), where pnl = 0 right after open] - collzero
+                    let mr = (await this.perpService.getMarginRatio(wlt.address))!.toNumber()
+                    actualProfit = mr!*posVal - this.marketMap[market.name].collateral
+                }
+                else { //---- insufficient freec. close and reopen
+                       await this.close( wlt!, market.baseToken) 
+                       //compute abs ret using current collat == free collateral
+                       let ccollat = (await this.perpService.getFreeCollateral(wlt!.address)).toNumber()
+                       actualProfit = ccollat - this.marketMap[market.name].collateral
+                       //delverage reopen 
+                       this.open(wlt!, this.marketMap[market.name].baseToken,side,ccollat*newlvrj)
+                       console.log("INFO, Reopen" +"," + market.name)
+                }
+                // update collateral and cumulative loss
+                let fcol = this.marketMap[market.name].collateral += actualProfit
+                let fcloss = this.marketMap[market.name].cummulativeLoss += actualProfit
+    
+                //let rsz = await this.perpService.getTotalPositionSize(wlt.address, market.baseToken)
+                //--- print time, actual loss, newcoll, cumLoss
+                
+                let ts = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
+                console.log(ts + ",LMit:" + market.name +  "prft:" + actualProfit.toFixed(4) + 
+                            " cumLoss:" + fcloss.toFixed(4) + " ccollat: " + fcol.toFixed(4))
+            }
+            }
+    
         //--- Print info: pnl, returns
             /*
         console.log("INFO: " + mkt + ": pnl: " + upnl.toFixed(4) + " uret: " + uret.toFixed(4))
@@ -438,6 +462,7 @@ async dbg_get_uret() {
         // --------------------------------------------------------------------------------------------
         // --- OJO: the key may have been removed  bcoz of MAX_ROLL_LOSS, but dont want to check
         // relying on the if statement evaluating to false for undefined
+        /*
         if ( await this.isScaleTresh(market.name)) 
         {
             this.log.jinfo({ event: "scale trigger", params: { market: market.name }, })
@@ -484,7 +509,7 @@ async dbg_get_uret() {
                 }
             this.log.jinfo( {event: "Scale", params: { mkt: market.name, 
                                                        nlevrj: newlvrj, ncoll: +newcoll},} )
-        }
+        }*/
         
     }
 }

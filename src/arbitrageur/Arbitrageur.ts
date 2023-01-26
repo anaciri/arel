@@ -4,7 +4,7 @@ import { sleep } from "@perp/common/build/lib/helper"
 import { Log } from "@perp/common/build/lib/loggers"
 import { BotService } from "@perp/common/build/lib/perp/BotService"
 import { AmountType, Side } from "@perp/common/build/lib/perp/PerpService"
-import { CollateralManager } from "@perp/common/build/types/curie"
+import { CollateralManager, IClearingHouse } from "@perp/common/build/types/curie"
 import Big from "big.js"
 import { ethers } from "ethers"
 import { padEnd } from "lodash"
@@ -337,12 +337,12 @@ async dbg_get_uret() {
         //   Handle negative pnl 
         //--------------------------------------------------------------------------------------------------------------------
         if (upnl < 0) {
-        //--- mir check    
-        if( uret < this.marketMap[market.name].minReturn ){ 
+        //------------------- [ mir check ] ------------------------------------------------------
+        if( uret < this.marketMap[market.name].minReturn ) { 
             let newlvrj = config.TP_DELEVERAGE_FACTOR*lvrj
-            let adjLoss = upnl/config.TP_EXECUTION_HAIRCUT
+            let adjLoss = Math.abs(upnl)/config.TP_EXECUTION_HAIRCUT
             
-            if (freec > Math.abs(adjLoss) ) { //--- reduce position if enough freec --
+            if (freec > adjLoss ) { //--- reduce position if enough freec --
                 await this.open(wlt!,this.marketMap[market.name].baseToken,offsetSide,adjLoss*newlvrj)
                 //compute change in coll (loss) [(mr*posVal-pnl), where pnl = 0 right after open] - collzero
                 let mr = (await this.perpService.getMarginRatio(wlt.address))!.toNumber()
@@ -354,7 +354,7 @@ async dbg_get_uret() {
                    let ccollat = (await this.perpService.getFreeCollateral(wlt!.address)).toNumber()
                    actualLoss = ccollat - this.marketMap[market.name].collateral
                    //delverage reopen 
-                   this.open(wlt!, this.marketMap[market.name].baseToken,side,ccollat*newlvrj)
+                   await this.open(wlt!, this.marketMap[market.name].baseToken,side,ccollat*newlvrj)
                    console.log("INFO, Reopen" +"," + market.name)
             }
             // update collateral and cumulative loss
@@ -362,13 +362,29 @@ async dbg_get_uret() {
             let fcloss = this.marketMap[market.name].cummulativeLoss += actualLoss
 
             //let rsz = await this.perpService.getTotalPositionSize(wlt.address, market.baseToken)
-            //--- print time, actual loss, newcoll, cumLoss
-            
             let ts = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
-            console.log(ts + ",LMit: " + market.name + " aloss:" + actualLoss.toFixed(4) + 
+            console.log(ts + ",LMit:" + market.name + " aloss:" + actualLoss.toFixed(4) + 
                         " cumLoss:" + fcloss.toFixed(4) + " ccollat:" + fcol.toFixed(4))
-        }
-        }
+        } // end of mir check
+        //------------------- [ cumLoss check ] ------------------------------------------------------
+        // unrealized-cumulative- loss (ucl) ret relative to initial basis 1 + (basis+cumloss -basis + upnl)/basis =>
+            // uret (cumLoss + upnl)/initialSeed. unrealizedCummulativeLoss
+            // if collateral < initial collateral use seed capital so we clip the worse path for 
+        // if above then use peak collateral. rr is rollreturn 
+            let ucl = this.marketMap[market.name].cummulativeLoss + upnl
+            let basis = (this.marketMap[market.name].collateral > config.TP_START_CAP) 
+                        ? this.marketMap[market.name].peakCollateral 
+                        : config.TP_START_CAP
+            let rr = 1 + ucl/basis
+            if (rr < config.TP_MAX_ROLL_LOSS ) {
+                await this.close( wlt!, market.baseToken) 
+                delete this.marketMap[market.name]
+                console.log("INFO: " + market.name + "MAX_LOSS_ROLL reached. CumLoss " + ucl)
+                //exit main loop
+                return 
+            }
+            console.log(market.name + ":ucl:" + ucl.toFixed(4), + ":basis:" + basis.toFixed(4))
+        } // end of negative upnl 
         //--------------------------------------------------------------------------------------------------------------------
         //   Handle positive pnl 
         //--------------------------------------------------------------------------------------------------------------------
@@ -390,7 +406,7 @@ async dbg_get_uret() {
                        let ccollat = (await this.perpService.getFreeCollateral(wlt!.address)).toNumber()
                        actualProfit = ccollat - this.marketMap[market.name].collateral
                        //delverage reopen 
-                       this.open(wlt!, this.marketMap[market.name].baseToken,side,ccollat*newlvrj)
+                       await this.open(wlt!, this.marketMap[market.name].baseToken,side,ccollat*newlvrj)
                        console.log("INFO, Reopen" +"," + market.name)
                 }
                 // update collateral and cumulative loss
@@ -406,7 +422,7 @@ async dbg_get_uret() {
             }
         }
         //--- beats Print info: pnl, returns
-        console.log(market.name + ": pnl: " + upnl.toFixed(4) + " uret: " + uret.toFixed(4) + " lvrj: " + lvrj)
+        console.log(market.name + ":pnl:" + upnl.toFixed(4) + " uret:" + uret.toFixed(4) + " mr:" + mr!.toFixed(4))
 
         /*
         console.log("INFO: " + mkt + ": pnl: " + upnl.toFixed(4) + " uret: " + uret.toFixed(4))

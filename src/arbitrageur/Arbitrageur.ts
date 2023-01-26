@@ -332,14 +332,12 @@ async dbg_get_uret() {
         let actualLoss = null
         let actualProfit = null
         
-
+        let uret = 1 + upnl/this.marketMap[market.name].collateral
         //--------------------------------------------------------------------------------------------------------------------
         //   Handle negative pnl 
         //--------------------------------------------------------------------------------------------------------------------
         if (upnl < 0) {
-        //---- check for mir (loss mitigation)
-        let uret = 1 + upnl/this.marketMap[market.name].collateral
-
+        //--- mir check    
         if( uret < this.marketMap[market.name].minReturn ){ 
             let newlvrj = config.TP_DELEVERAGE_FACTOR*lvrj
             let adjLoss = upnl/config.TP_EXECUTION_HAIRCUT
@@ -375,9 +373,7 @@ async dbg_get_uret() {
         //   Handle positive pnl 
         //--------------------------------------------------------------------------------------------------------------------
         if (upnl > 0) {
-            //---- check for mir (loss mitigation)
-            let uret = 1 + upnl/this.marketMap[market.name].collateral
-    
+            //---- mar check (scaling check)
             if( uret > this.marketMap[market.name].maxReturn ){ 
                 let newlvrj = config.TP_RELEVERAGE_FACTOR*lvrj
                 let adjRet = upnl/config.TP_EXECUTION_HAIRCUT

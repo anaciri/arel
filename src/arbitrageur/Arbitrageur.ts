@@ -343,12 +343,18 @@ async dbg_get_uret() {
             let adjLoss = Math.abs(upnl)/config.TP_EXECUTION_HAIRCUT
             
             if (freec > adjLoss ) { //--- reduce position if enough freec --
-                await this.open(wlt!,this.marketMap[market.name].baseToken,offsetSide,adjLoss*newlvrj)
-                //compute change in coll (loss) [(mr*posVal-pnl), where pnl = 0 right after open] - collzero
-                let mr = (await this.perpService.getMarginRatio(wlt.address))!.toNumber()
-                actualLoss = mr!*posVal - this.marketMap[market.name].collateral
+                if (adjLoss > config.TP_EXEC_MIN_PNL) {
+                    await this.open(wlt!,this.marketMap[market.name].baseToken,offsetSide,adjLoss*newlvrj)
+                    //compute change in coll (loss) [(mr*posVal-pnl), where pnl = 0 right after open] - collzero
+                    let mr = (await this.perpService.getMarginRatio(wlt.address))!.toNumber()
+                    actualLoss = mr!*posVal - this.marketMap[market.name].collateral
+                }
+                else { // amount too small to execute but still count as an (urealiaze) loss
+                    console.log(adjLoss.toFixed(2) + " Too small loss to exec: " + market.name )
+                    actualLoss = -adjLoss
+                }
             }
-            else { //---- insufficient freec. close and reopen
+            else { //---- insufficient freec.close and reopen UNLIKELY to be less than TP_EXEC_MIN_ PNL. 
                    await this.close( wlt!, market.baseToken) 
                    //compute actual loss using current collat == free collateral
                    let ccollat = (await this.perpService.getFreeCollateral(wlt!.address)).toNumber()
@@ -383,7 +389,7 @@ async dbg_get_uret() {
                 //exit main loop
                 return 
             }
-            console.log(market.name + ":ucl:" + ucl.toFixed(4), + ":basis:" + basis.toFixed(4))
+            console.log(market.name + ":ucl:" + ucl.toFixed(4) + ":basis: " + basis.toFixed(4))
         } // end of negative upnl 
         //--------------------------------------------------------------------------------------------------------------------
         //   Handle positive pnl 
@@ -392,13 +398,19 @@ async dbg_get_uret() {
             //---- mar check (scaling check)
             if( uret > this.marketMap[market.name].maxReturn ){ 
                 let newlvrj = config.TP_RELEVERAGE_FACTOR*lvrj
-                let adjRet = upnl/config.TP_EXECUTION_HAIRCUT
+                let adjRet = upnl*config.TP_EXECUTION_HAIRCUT  // reduce the nominal pnl to accoutn for execution cost
                 
-                if (freec > Math.abs(adjRet) ) { //--- reduce position if enough freec --
-                    await this.open(wlt!,this.marketMap[market.name].baseToken,offsetSide,adjRet*newlvrj)
-                    //compute change in coll (abs return) [(mr*posVal-pnl), where pnl = 0 right after open] - collzero
-                    let mr = (await this.perpService.getMarginRatio(wlt.address))!.toNumber()
-                    actualProfit = mr!*posVal - this.marketMap[market.name].collateral
+                if (freec > adjRet ) { //--- reduce position if enough freec --
+                    if (adjRet > config.TP_EXEC_MIN_PNL) {
+                        await this.open(wlt!,this.marketMap[market.name].baseToken,offsetSide,adjRet*newlvrj)
+                        //compute change in coll (abs return) [(mr*posVal-pnl), where pnl = 0 right after open] - collzero
+                        let mr = (await this.perpService.getMarginRatio(wlt.address))!.toNumber()
+                        actualProfit = mr!*posVal - this.marketMap[market.name].collateral
+                    }
+                    else { // amount too small to execute but still count as an (urealiaze) loss
+                        actualProfit = adjRet
+                        console.log(actualProfit.toFixed(2) + " Too small profit to exec: " + market.name )
+                    }
                 }
                 else { //---- insufficient freec. close and reopen
                        await this.close( wlt!, market.baseToken) 

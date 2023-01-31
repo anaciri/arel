@@ -280,6 +280,7 @@ async dbg_get_uret() {
         let lvrj = this.marketMap[market.name].leverage
         let loss = null
         let actualProfit = null
+        let uret = null
         
         //let uret = 1 + upnl/this.marketMap[market.name].collateral
 
@@ -305,7 +306,7 @@ async dbg_get_uret() {
         let upnl = absNotional*mr-this.marketMap[market.name].collateral  //derive pnl from margin
         let adjLoss = Math.abs(upnl*config.TP_EXECUTION_HAIRCUT)
         let newlvrj = config.TP_DELEVERAGE_FACTOR*lvrj // in case need to offset
-        let uret = 1 - adjLoss/nvz
+        uret = 1 - adjLoss/nvz
 
         // collateral and notionalvalzero nvz updated in onScale. onLoss manges cumLoss which is based on nvz
         // if cumLoss(START,pnl) > loss(collatera,nvz) => update cumLoss
@@ -380,7 +381,7 @@ async dbg_get_uret() {
             //---- mar check (scaling check)
 
             //>>>>>>>>>>>>>>> FIX need to use Notional based PNL. tmp use pnl/collat >>>>>>>>>>>>>>>
-            let uret = 1 + perpPnl/this.marketMap[market.name].collateral
+            uret = 1 + perpPnl/this.marketMap[market.name].collateral
 
             if( uret > this.marketMap[market.name].maxReturn ) { 
                 let newlvrj = config.TP_RELEVERAGE_FACTOR*lvrj
@@ -418,11 +419,9 @@ async dbg_get_uret() {
                 console.log(ts + ",SCALE:" + market.name +  "prft:" + actualProfit.toFixed(4) + 
                             " markOpen:" + " ccollat: " + finalCol.toFixed(4))
             }
-
-            //--- beats Print info: pnl, returns
-        console.log(market.name + ":pnl:" + perpPnl.toFixed(4) + " mr:" + mr!.toFixed(4) + " uret:" + uret.toFixed(4) )
         }
-        
+        //--- beats Print info: pnl, returns
+        console.log(market.name + ":pnl:" + perpPnl.toFixed(4) + " mr:" + mr!.toFixed(4) + " uret:" + uret!.toFixed(4) )        
 
         /*
         console.log("INFO: " + mkt + ": pnl: " + upnl.toFixed(4) + " uret: " + uret.toFixed(4))

@@ -49,6 +49,7 @@ interface Market {
     resetSize: number
     cummulativeLoss: number
     notionalBasis: number
+    maxPnl: number
 // TODO.RMV
 orderAmount: Big
 
@@ -146,10 +147,11 @@ async dbg_get_uret() {
                 minMarginRatio: market.MIN_MARGIN_RATIO,
                 maxMarginRatio: market.MAX_MARGIN_RATIO,
                 collateral: market.START_COLLATERAL,
-//                peakCollateral: market.START_COLLATERAL,
+//              peakCollateral: market.START_COLLATERAL,
                 resetLeverage: market.RESET_LEVERAGE,
                 leverage: market.RESET_LEVERAGE,
                 cummulativeLoss: 0,
+                maxPnl: 0,
                 notionalBasis: config.TP_START_CAP*market.RESET_LEVERAGE,
                 //TODO.rmv
                 resetNeeded: false,
@@ -387,14 +389,21 @@ async dbg_get_uret() {
         // notionalBasis will be the highest running peak
         // 1. mar checking
 
-        // if notional is not a new peak. nothing to do
-        if ( (perpPnl > 0) && (absNotional > this.marketMap[market.name].notionalBasis) ) {
-            let mrZero = 1/this.marketMap[market.name].resetLeverage
-            let DltNotional = absNotional - this.marketMap[market.name].notionalBasis
-            let icoll = mrZero*absNotional - DltNotional
-            let upnl = icoll - this.marketMap[market.name].collateral 
+        let upnl = mr*absNotional - this.marketMap[market.name].collateral 
+        //if ( (perpPnl > 0) && (absNotional > this.marketMap[market.name].notionalBasis) ) {
+            if ( (perpPnl > 0) && ((upnl > this.marketMap[market.name].maxPnl) ) ) {  
+                this.marketMap[market.name].maxPnl = upnl
+                let icoll = this.marketMap[market.name].collateral + config.TP_EXECUTION_HAIRCUT*upnl
+            //let mrZero = 1/this.marketMap[market.name].resetLeverage
+            //let DltNotional = absNotional - this.marketMap[market.name].notionalBasis
+            //let icoll = mrZero*absNotional - DltNotional
+            //let upnl = icoll - this.marketMap[market.name].collateral 
+
             
             uret = 1 + upnl/this.marketMap[market.name].collateral
+            console.log(market.name + " icoll: " + icoll.toFixed(4) 
+                        + " peakPnl:" + this.marketMap[market.name].maxPnl + "coll: " + 
+                           this.marketMap[market.name].collateral)
 
             if( uret > this.marketMap[market.name].maxReturn ) { 
                 let newlvrj = config.TP_RELEVERAGE_FACTOR*lvrj
@@ -421,22 +430,22 @@ async dbg_get_uret() {
                        await this.open(wlt!, this.marketMap[market.name].baseToken,side,ccollat*newlvrj)
                        console.log("INFO, Reopen" +"," + market.name)
                 }
-                // update collateral and cumulative loss
-                this.marketMap[market.name].notionalBasis = absNotional
-                this.marketMap[market.name].collateral = icoll
-                this.marketMap[market.name].leverage *= config.TP_RELEVERAGE_FACTOR // <-- Max(esto or TP_MIN_LEVERAGE)
 
+                this.marketMap[market.name].collateral = icoll
+                this.marketMap[market.name].leverage *= newlvrj // <-- Max(esto or TP_MIN_LEVERAGE)
+                this.marketMap[market.name].notionalBasis = icoll*newlvrj
+                
                 //let fcloss = this.marketMap[market.name].cummulativeLoss += actualProfit
     
                 //let rsz = await this.perpService.getTotalPositionSize(wlt.address, market.baseToken)
                 //--- print time, actual loss, newcoll, cumLoss
                 
                 let ts = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
-                console.log(ts + ",SCALE:" + market.name +  "dltNtl:" + absNotional.toFixed(4) + " icoll: " + icoll.toFixed(4))
+                console.log(ts + ",SCALE:" + market.name +  "notl :" + absNotional.toFixed(4) + " icoll: " + icoll.toFixed(4))
             }
         }
         //--- beats Print info: pnl, returns
-        console.log(market.name + ":pnl:" + perpPnl.toFixed(4) + " mr:" + mr!.toFixed(4) + " uret:" + uret!.toFixed(4) )        
+        console.log(market.name + ":prpnl:" + perpPnl.toFixed(4) + " mr:" + mr!.toFixed(4) + " uret:" + uret!.toFixed(4) )        
 
         /*
         console.log("INFO: " + mkt + ": pnl: " + upnl.toFixed(4) + " uret: " + uret.toFixed(4))

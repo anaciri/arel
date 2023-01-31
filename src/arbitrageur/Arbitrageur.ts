@@ -402,7 +402,7 @@ async dbg_get_uret() {
             
             uret = 1 + upnl/this.marketMap[market.name].collateral
             console.log(market.name + " icoll: " + icoll.toFixed(4) 
-                        + " peakPnl:" + this.marketMap[market.name].maxPnl + "coll: " + 
+                        + " peakPnl:" + this.marketMap[market.name].maxPnl.toFixed(4) + "coll: " + 
                            this.marketMap[market.name].collateral)
 
             if( uret > this.marketMap[market.name].maxReturn ) { 
@@ -445,7 +445,7 @@ async dbg_get_uret() {
             }
         }
         //--- beats Print info: pnl, returns
-        console.log(market.name + ":prpnl:" + perpPnl.toFixed(4) + " mr:" + mr!.toFixed(4) + " uret:" + uret!.toFixed(4) )        
+        console.log(market.name + ":prpnl:" + perpPnl.toFixed(4) + " mr:" + mr!.toFixed(4))      
 
         /*
         console.log("INFO: " + mkt + ": pnl: " + upnl.toFixed(4) + " uret: " + uret.toFixed(4))

@@ -34,6 +34,7 @@ function transformValues(map: Map<string, string>,
   // scale down/up. virtual collateral is the 'peak' unrealized collateral
 
 interface Market {
+    
     name: string
     baseToken: string
     poolAddr: string
@@ -42,11 +43,12 @@ interface Market {
     minMarginRatio: number
     maxMarginRatio: number
     collateral: number
-    peakCollateral: number
+//    peakCollateral: number
     leverage: number
     resetNeeded:boolean
     resetSize: number
     cummulativeLoss: number
+    startNotional: number
 // TODO.RMV
 orderAmount: Big
 
@@ -144,9 +146,10 @@ async dbg_get_uret() {
                 minMarginRatio: market.MIN_MARGIN_RATIO,
                 maxMarginRatio: market.MAX_MARGIN_RATIO,
                 collateral: market.START_COLLATERAL,
-                peakCollateral: market.START_COLLATERAL,
+//                peakCollateral: market.START_COLLATERAL,
                 leverage: market.RESET_LEVERAGE,
                 cummulativeLoss: 0,
+                startNotional: config.TP_START_CAP*market.RESET_LEVERAGE,
                 //TODO.rmv
                 resetNeeded: false,
                 resetSize:0
@@ -233,60 +236,7 @@ async dbg_get_uret() {
         //return mr !== null && mr.gt(mmr)
     }
 
-
-    private async isStopLoss(mkt: string): Promise<boolean> {
-        
-        //const OP_USDC_ADDR = '0x7F5c764cBc14f9669B88837ca1490cCa17c31607'
-        let wlt = this.ethService.privateKeyToWallet(this.pkMap.get(mkt)!)
-        // TODO.OPTM make it a this param
-        const vault = this.perpService.createVault()
-
-        // check unrealizedReturn
-        //TODO.NXT add pending funding to pnl
-        // supportedvault func??? better useconst collatCurr = (await vault.getBalanceByToken(wlt.address, OP_USDC_ADDR)) / 10**6
- 
-        
-        const upnl =  (await this.perpService.getOwedAndUnrealizedPnl(wlt.address)).unrealizedPnl.toNumber()
-        // --- Check if peakCollateral needs to be updtate. Wrong place i know, refactor into main routine
-        let collat = this.marketMap[mkt].collateral
-        let pcoll =  this.marketMap[mkt].peakCollateral
-
-        if ( (pcoll > collat) && (upnl > 0) ) {
-            if ( collat + upnl* config.TP_EXECUTION_HAIRCUT > pcoll) {
-                this.marketMap[mkt].peakCollateral += upnl*config.TP_EXECUTION_HAIRCUT
-                console.log("INFO: peakCollat updated = " + this.marketMap[mkt].peakCollateral)
-            }
-        }
-
-            // check if breached TP_MAX_ROLL_LOSS => disable mkt and exit block
-            // use peakCollateral only if you have cleared the start seed
-
-        //--- Only If already in profitable zone use the peak collat as basis. else ignore peak collateral 
-        let basis = (collat > config.TP_START_CAP) ? this.marketMap[mkt].peakCollateral : collat
-        //--- Check if exceeded max absolute loss relative to initial seed
-        if (upnl < 0) { 
-            let cumloss = this.marketMap[mkt].cummulativeLoss + upnl
-            let ret = 1 + ( (basis + cumloss) -basis )/basis
-
-            if (ret < config.TP_MAX_ROLL_LOSS ) {
-                await this.closePosition( wlt!, this.marketMap[mkt].baseToken) 
-                delete this.marketMap[mkt]
-                console.log("INFO: " + mkt + "MAX_LOSS_ROLL reached. CumLoss " + cumloss)
-                //TODO. HACK to exit loop. need to refactor
-                return false
-            }
-        }
-
-        let uret = 1 + upnl/collat
-        if( uret < this.marketMap[mkt].minReturn ){ 
-            console.log(mkt + " LMit: "+ mkt + "pnl: " + upnl)
-            return true
-        }
-        console.log(mkt + ": pnl: " + upnl.toFixed(4) + " uret: " + uret.toFixed(4))
-        return false
-
-    }
-   
+    
  // TODO move to butil file
  async open(wlt: ethers.Wallet, btoken: string, side: Side, usdAmount: number ) {
     try {
@@ -326,77 +276,115 @@ async dbg_get_uret() {
         //let offsetSide = side.endsWith("SHORT") ? Side.LONG : Side.SHORT
         // current collateral needed to compute actual loss to add to cumulative loss. mr = [upnl + collat]/position value
         let posVal = (await this.perpService.getTotalAbsPositionValue(wlt.address)).toNumber()
-        let mr = await this.perpService.getMarginRatio(wlt.address)
+        let mr = (await this.perpService.getMarginRatio(wlt.address))!.toNumber()
         
         let lvrj = this.marketMap[market.name].leverage
-        let actualLoss = null
+        let loss = null
         let actualProfit = null
         
-        let uret = 1 + upnl/this.marketMap[market.name].collateral
+        //let uret = 1 + upnl/this.marketMap[market.name].collateral
+
         //--------------------------------------------------------------------------------------------------------------------
         //   Handle negative pnl 
         //--------------------------------------------------------------------------------------------------------------------
         if (upnl < 0) {
+        // 0. A) mir check, B) umLoss check, C) RollStateTransition
+        // 1. A. compute change in Notional aka pnl/dltaNV from mr, using the internal NotionalValueZero nvz aka startNotional
+        //    nvz initialize to nvz = lvrg*START and updated onScale
+        // 2. A. update cumulativeLoss and then decide if to actually offset partially, coplete (reopen), suspended
+        //    suspended means shoud have offset but will only do it on paper
+        // 2. A. update leverage (deleverage)
+        // 3. B. cumLoss already reflecting loss, simply check if triggered
+        // 4. B. flag if we are at RollState.END i.e was a Fav leg ie collat > START
+        // 5. B. close if meet criteria. No partial or suspended
+        // 6. C. Roll State machine transition
+        // ret = 1 + DltaNV/nvz, DltaNV = mr*nvz-collat; . dltaNZ is my computed pnl
+        // cumLoss is *ONLY* realized losses by offset (including suspended offsets)
+        // if projectedCumloss > MAX_LOSS => then add it to trigger a maxLoss exit
+
+        // nv: notianol value, dltaNVZ aka pnl
+        let nvz = this.marketMap[market.name].startNotional // onStart nvz = START_CAT * lvrj
+        let dltaNZ = nvz*mr-this.marketMap[market.name].collateral  //derive pnl from margin
+        let adjLoss = Math.abs(dltaNZ*config.TP_EXECUTION_HAIRCUT)
+        let newlvrj = config.TP_DELEVERAGE_FACTOR*lvrj // in case need to offset
+        let uret = 1 + adjLoss/nvz
+
+        // collateral and notionalvalzero nvz updated in onScale. onLoss manges cumLoss which is based on nvz
+        // if cumLoss(START,pnl) > loss(collatera,nvz) => update cumLoss
+
+        // 1. collat DECrement on mir check. MAX(START,mkt.collateral+=adjLoss)  
+        // 2. cumLossI  INCrmt on cumLoss check MAX(mtk.Closs, mkt.Closs +adjLoss )
+        // 1,2 do always, mir execution ONLY if above minimum, CumLoss execution even if too smal
         //------------------- [ mir check ] ------------------------------------------------------
         if( uret < this.marketMap[market.name].minReturn ) { 
-            let newlvrj = config.TP_DELEVERAGE_FACTOR*lvrj
-            let adjLoss = Math.abs(upnl)/config.TP_EXECUTION_HAIRCUT
-            
+            // initialize loss to adjLoss in case is a suspended offset
+            loss = adjLoss
+            //let finalCol = Math.max( config.TP_START_CAP -= adjLoss, this.marketMap[market.name].collateral) += actualLoss
+            //let finalCumLoss = this.marketMap[market.name].cummulativeLoss += actualLoss
             if (freec > adjLoss ) { //--- reduce position if enough freec --
                 if (adjLoss > config.TP_EXEC_MIN_PNL) {
                     await this.open(wlt!,this.marketMap[market.name].baseToken,offsetSide,adjLoss*newlvrj)
-                    //compute change in coll (loss) [(mr*posVal-pnl), where pnl = 0 right after open] - collzero
+                    //calc coll (loss) [(mr*posVal-pnl), where pnl = 0 right after open] - collzero
                     let mr = (await this.perpService.getMarginRatio(wlt.address))!.toNumber()
-                    actualLoss = mr!*posVal - this.marketMap[market.name].collateral
+                    // overwrie loss to use the actual loss
+                    loss = mr!*posVal - this.marketMap[market.name].collateral
                 }
                 else { // amount too small to execute but still count as an (urealiaze) loss
-                    console.log(adjLoss.toFixed(2) + " Too small loss to exec: " + market.name )
-                    actualLoss = -adjLoss
+                    console.log(loss.toFixed(2) + " Too small loss to exec: " + market.name )
+                    //loss = -adjLoss // will use this estimated loss since we will not have an actual offseting
                 }
+                
             }
             else { //---- insufficient freec.close and reopen UNLIKELY to be less than TP_EXEC_MIN_ PNL. 
                    await this.close( wlt!, market.baseToken) 
                    //compute actual loss using current collat == free collateral
                    let ccollat = (await this.perpService.getFreeCollateral(wlt!.address)).toNumber()
-                   actualLoss = ccollat - this.marketMap[market.name].collateral
+                   loss = ccollat - this.marketMap[market.name].collateral
                    //delverage reopen 
                    await this.open(wlt!, this.marketMap[market.name].baseToken,side,ccollat*newlvrj)
                    console.log("INFO, Reopen" +"," + market.name)
             }
-            // update collateral and cumulative loss
-            let fcol = this.marketMap[market.name].collateral += actualLoss
-            let fcloss = this.marketMap[market.name].cummulativeLoss += actualLoss
 
             //let rsz = await this.perpService.getTotalPositionSize(wlt.address, market.baseToken)
+            // regardless what type of offseting we inc cumLoss
+            let finalCumLoss = this.marketMap[market.name].cummulativeLoss =+ loss
+            this.marketMap[market.name].leverage *= config.TP_DELEVERAGE_FACTOR // <-- Max(esto or TP_MIN_LEVERAGE)
+
             let ts = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
-            console.log(ts + ",LMit:" + market.name + " aloss:" + actualLoss.toFixed(4) + 
-                        " cumLoss:" + fcloss.toFixed(4) + " ccollat:" + fcol.toFixed(4))
+            console.log(ts + ",LMit:" + market.name + " aloss:" + loss.toFixed(4) + " cumLoss:" + finalCumLoss.toFixed(4))
         } // end of mir check
         //------------------- [ cumLoss check ] ------------------------------------------------------
         // unrealized-cumulative- loss (ucl) ret relative to initial basis 1 + (basis+cumloss -basis + upnl)/basis =>
             // uret (cumLoss + upnl)/initialSeed. unrealizedCummulativeLoss
             // if collateral < initial collateral use seed capital so we clip the worse path for 
         // if above then use peak collateral. rr is rollreturn 
-            let ucl = this.marketMap[market.name].cummulativeLoss + upnl
-            let basis = (this.marketMap[market.name].collateral > config.TP_START_CAP) 
-                        ? this.marketMap[market.name].peakCollateral 
-                        : config.TP_START_CAP
-            let rr = 1 + ucl/basis
-            if (rr < config.TP_MAX_ROLL_LOSS ) {
+            //let projCumLoss = this.marketMap[market.name].cummulativeLoss + upnl
+            //TODO.NEXT <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+            //if this.marketMap[market.name].collateral >  config.TP_START_CAP RollState = END
+            //<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+            //let basis = Math.max(this.marketMap[market.name].collateral, config.TP_START_CAP) 
+            //let basis = (this.marketMap[market.name].collateral > config.TP_START_CAP) ? this.marketMap[market.name].peakCollateral : config.TP_START_CAP
+            let rollRet = 1 - this.marketMap[market.name].cummulativeLoss/this.marketMap[market.name].collateral
+            if (rollRet < config.TP_MAX_ROLL_LOSS ) {
                 await this.close( wlt!, market.baseToken) 
+                
+                console.log("EVENT:" + market.name + "MAX_LOSS_ROLL reached. CumLoss " + this.marketMap[market.name].cummulativeLoss)
                 delete this.marketMap[market.name]
-                console.log("INFO: " + market.name + "MAX_LOSS_ROLL reached. CumLoss " + ucl)
                 //exit main loop
                 return 
             }
-            console.log(market.name + ":ucl:" + ucl.toFixed(4) + ":basis: " + basis.toFixed(4))
+            console.log(market.name + ":cl:" + this.marketMap[market.name].cummulativeLoss.toFixed(4))
         } // end of negative upnl 
         //--------------------------------------------------------------------------------------------------------------------
         //   Handle positive pnl 
         //--------------------------------------------------------------------------------------------------------------------
         if (upnl > 0) {
             //---- mar check (scaling check)
-            if( uret > this.marketMap[market.name].maxReturn ){ 
+
+            //>>>>>>>>>>>>>>> FIX need to use Notional based PNL. tmp use pnl/collat >>>>>>>>>>>>>>>
+            let uret = 1 + upnl/this.marketMap[market.name].collateral
+
+            if( uret > this.marketMap[market.name].maxReturn ) { 
                 let newlvrj = config.TP_RELEVERAGE_FACTOR*lvrj
                 let adjRet = upnl*config.TP_EXECUTION_HAIRCUT  // reduce the nominal pnl to accoutn for execution cost
                 
@@ -422,19 +410,21 @@ async dbg_get_uret() {
                        console.log("INFO, Reopen" +"," + market.name)
                 }
                 // update collateral and cumulative loss
-                let fcol = this.marketMap[market.name].collateral += actualProfit
-                let fcloss = this.marketMap[market.name].cummulativeLoss += actualProfit
+                let finalCol = this.marketMap[market.name].collateral += actualProfit
+                //let fcloss = this.marketMap[market.name].cummulativeLoss += actualProfit
     
                 //let rsz = await this.perpService.getTotalPositionSize(wlt.address, market.baseToken)
                 //--- print time, actual loss, newcoll, cumLoss
                 
                 let ts = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
-                console.log(ts + ",LMit:" + market.name +  "prft:" + actualProfit.toFixed(4) + 
-                            " cumLoss:" + fcloss.toFixed(4) + " ccollat: " + fcol.toFixed(4))
+                console.log(ts + ",SCALE:" + market.name +  "prft:" + actualProfit.toFixed(4) + 
+                            " markOpen:" + " ccollat: " + finalCol.toFixed(4))
             }
+
+            //--- beats Print info: pnl, returns
+        console.log(market.name + ":pnl:" + upnl.toFixed(4) + " mr:" + mr!.toFixed(4) + " uret:" + uret.toFixed(4) )
         }
-        //--- beats Print info: pnl, returns
-        console.log(market.name + ":pnl:" + upnl.toFixed(4) + " uret:" + uret.toFixed(4) + " mr:" + mr!.toFixed(4))
+        
 
         /*
         console.log("INFO: " + mkt + ": pnl: " + upnl.toFixed(4) + " uret: " + uret.toFixed(4))

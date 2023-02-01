@@ -376,6 +376,9 @@ async dbg_get_uret() {
                 //exit main loop
                 return 
             }
+            //--- beats Print info: pnl, returns
+            console.log(market.name + ":nvz:" + nvz.toFixed(4) + ": adjLoss:" + adjLoss.toFixed(4) + 
+                        " mr:" + mr!.toFixed(4) + " uret: " + uret.toFixed(4))    
             //console.log(market.name + ":cl:" + this.marketMap[market.name].cummulativeLoss.toFixed(4))
         } // end of negative upnl 
         //--------------------------------------------------------------------------------------------------------------------
@@ -444,8 +447,7 @@ async dbg_get_uret() {
                 console.log(ts + ",SCALE:" + market.name +  "notl :" + absNotional.toFixed(4) + " icoll: " + icoll.toFixed(4))
             }
         }
-        //--- beats Print info: pnl, returns
-        console.log(market.name + ":prpnl:" + perpPnl.toFixed(4) + " mr:" + mr!.toFixed(4))      
+          
 
         /*
         console.log("INFO: " + mkt + ": pnl: " + upnl.toFixed(4) + " uret: " + uret.toFixed(4))

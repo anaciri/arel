@@ -71,9 +71,23 @@ export class Arbitrageur extends BotService {
     private readonly arbitrageMaxGasFeeEth = Big(config.ARBITRAGE_MAX_GAS_FEE_ETH)
 
 //----------------------------------------------------------------------------------------
-// DBG
+// DBG/ manual
 // block: 888, vPERP
 //----------------------------------------------------------------------------------------
+async dbg_openclose() {
+    let mkt = 'vPERP'
+    let btoken = "0x9482AaFdCed6b899626f465e1FA0Cf1B1418d797"
+    let side = Side.SHORT
+    let usdAmount = 50
+
+    let wlt = this.ethService.privateKeyToWallet(this.pkMap.get(mkt)!)
+    try {
+        await this.openPosition(wlt!, btoken ,side,AmountType.QUOTE,Big(usdAmount),undefined,undefined,undefined)
+    }
+    catch (e: any) {
+        console.error(`ERROR: FAILED OPEN. Rotating endpoint: ${e.toString()}`)
+    }
+}
 
 async dbg_get_uret() {
     // OJO. dont wast time testing what u know already works. closing and reopening
@@ -327,7 +341,7 @@ async dbg_get_uret() {
             //let finalCumLoss = this.marketMap[market.name].cummulativeLoss += actualLoss
             if (freec > adjLoss ) { //--- reduce position if enough freec --
                 if (adjLoss > config.TP_EXEC_MIN_PNL) {
-                    await this.open(wlt!,this.marketMap[market.name].baseToken,offsetSide,adjLoss*newlvrj)
+                    await this.open(wlt!,this.marketMap[market.name].baseToken,offsetSide,adjLoss*lvrj)
                     //calc coll (loss) [(mr*posVal-pnl), where pnl = 0 right after open] - collzero
                     let mr = (await this.perpService.getMarginRatio(wlt.address))!.toNumber()
                     // overwrie loss to use the actual loss
@@ -345,16 +359,17 @@ async dbg_get_uret() {
                    let ccollat = (await this.perpService.getFreeCollateral(wlt!.address)).toNumber()
                    loss = ccollat - this.marketMap[market.name].collateral
                    //delverage reopen 
-                   await this.open(wlt!, this.marketMap[market.name].baseToken,side,ccollat*newlvrj)
-                   console.log("INFO, Reopen" +"," + market.name)
+                   await this.open(wlt!, this.marketMap[market.name].baseToken,side,ccollat*lvrj)
+                   console.log("INFO, insuficient freec" +"," + market.name + " final collat:" + ccollat)
             }
 
             //let rsz = await this.perpService.getTotalPositionSize(wlt.address, market.baseToken)
             // regardless what type of offseting we inc cumLoss
-            this.marketMap[market.name].cummulativeLoss =+ loss
+            this.marketMap[market.name].cummulativeLoss =+ Math.abs(loss)
             this.marketMap[market.name].leverage *= config.TP_DELEVERAGE_FACTOR // <-- Max(esto or TP_MIN_LEVERAGE)
             // update collateral otherwise next uret will be calculated against wrong basis and in immieate uret loss trigger
-            this.marketMap[market.name].collateral =- loss
+            // OJO loss is negavite
+            this.marketMap[market.name].collateral =+ loss
 
             let ts = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
             console.log(ts + ",LMit:" + market.name + " aloss:" + loss.toFixed(4) + " cumLoss:" +
@@ -416,9 +431,9 @@ async dbg_get_uret() {
                 let newlvrj = config.TP_RELEVERAGE_FACTOR*lvrj
                 let adjRet = upnl*config.TP_EXECUTION_HAIRCUT  // reduce the nominal pnl to accoutn for execution cost
                 
-                if (freec > adjRet ) { //--- reduce position if enough freec --
+                if (freec > adjRet ) { //--- inc position if enough freec --
                     if (adjRet > config.TP_EXEC_MIN_PNL) {
-                        await this.open(wlt!,this.marketMap[market.name].baseToken,offsetSide,adjRet*newlvrj)
+                        await this.open(wlt!,this.marketMap[market.name].baseToken,side,adjRet*newlvrj)
                         //compute change in coll (abs return) [(mr*posVal-pnl), where pnl = 0 right after open] - collzero
                         let mr = (await this.perpService.getMarginRatio(wlt.address))!.toNumber()
                         actualProfit = mr!*absNotional - this.marketMap[market.name].collateral
@@ -433,7 +448,7 @@ async dbg_get_uret() {
                        //compute abs ret using current collat == free collateral
                        let ccollat = (await this.perpService.getFreeCollateral(wlt!.address)).toNumber()
                        actualProfit = ccollat - this.marketMap[market.name].collateral
-                       //delverage reopen 
+                       //releverage reopen 
                        await this.open(wlt!, this.marketMap[market.name].baseToken,side,ccollat*newlvrj)
                        console.log("INFO, Reopen" +"," + market.name)
                 }

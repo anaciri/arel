@@ -42,6 +42,7 @@ interface Market {
     minMarginRatio: number
     maxMarginRatio: number
     collateral: number
+    startCollateral: number
 //    peakCollateral: number
     resetLeverage: number
     leverage: number
@@ -147,6 +148,7 @@ async dbg_get_uret() {
                 minMarginRatio: market.MIN_MARGIN_RATIO,
                 maxMarginRatio: market.MAX_MARGIN_RATIO,
                 collateral: market.START_COLLATERAL,
+                startCollateral: market.START_COLLATERAL,
 //              peakCollateral: market.START_COLLATERAL,
                 resetLeverage: market.RESET_LEVERAGE,
                 leverage: market.RESET_LEVERAGE,
@@ -351,6 +353,8 @@ async dbg_get_uret() {
             // regardless what type of offseting we inc cumLoss
             this.marketMap[market.name].cummulativeLoss =+ loss
             this.marketMap[market.name].leverage *= config.TP_DELEVERAGE_FACTOR // <-- Max(esto or TP_MIN_LEVERAGE)
+            // update collateral otherwise next uret will be calculated against wrong basis and in immieate uret loss trigger
+            this.marketMap[market.name].collateral =- loss
 
             let ts = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
             console.log(ts + ",LMit:" + market.name + " aloss:" + loss.toFixed(4) + " cumLoss:" +
@@ -367,7 +371,7 @@ async dbg_get_uret() {
             //<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
             //let basis = Math.max(this.marketMap[market.name].collateral, config.TP_START_CAP) 
             //let basis = (this.marketMap[market.name].collateral > config.TP_START_CAP) ? this.marketMap[market.name].peakCollateral : config.TP_START_CAP
-            let rollRet = 1 - this.marketMap[market.name].cummulativeLoss/this.marketMap[market.name].collateral
+            let rollRet = 1 - this.marketMap[market.name].cummulativeLoss/this.marketMap[market.name].startCollateral
             if (rollRet < config.TP_MAX_ROLL_LOSS ) {
                 await this.close( wlt!, market.baseToken) 
                 
@@ -406,7 +410,7 @@ async dbg_get_uret() {
             uret = 1 + upnl/this.marketMap[market.name].collateral
             console.log(market.name + " icoll: " + icoll.toFixed(4) 
                         + " peakPnl:" + this.marketMap[market.name].maxPnl.toFixed(4) + "coll: " + 
-                           this.marketMap[market.name].collateral)
+                           this.marketMap[market.name].collateral + " uret: " + uret.toFixed(4))
 
             if( uret > this.marketMap[market.name].maxReturn ) { 
                 let newlvrj = config.TP_RELEVERAGE_FACTOR*lvrj

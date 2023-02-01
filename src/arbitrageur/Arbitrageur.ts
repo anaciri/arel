@@ -305,11 +305,11 @@ async dbg_get_uret() {
         // if projectedCumloss > MAX_LOSS => then add it to trigger a maxLoss exit
 
         // nv: notianol value, dltaNVZ aka pnl
-        let nvz = this.marketMap[market.name].notionalBasis // onStart nvz = START_CAT * lvrj
+        //let nvz = this.marketMap[market.name].notionalBasis // onStart nvz = START_CAT * lvrj
         let upnl = absNotional*mr-this.marketMap[market.name].collateral  //derive pnl from margin
         let adjLoss = Math.abs(upnl/config.TP_EXECUTION_HAIRCUT)
         let newlvrj = config.TP_DELEVERAGE_FACTOR*lvrj // in case need to offset
-        uret = 1 - adjLoss/nvz
+        uret = 1 - adjLoss/this.marketMap[market.name].collateral
 
         // collateral and notionalvalzero nvz updated in onScale. onLoss manges cumLoss which is based on nvz
         // if cumLoss(START,pnl) > loss(collatera,nvz) => update cumLoss
@@ -377,7 +377,7 @@ async dbg_get_uret() {
                 return 
             }
             //--- beats Print info: pnl, returns
-            console.log(market.name + ":nvz:" + nvz.toFixed(4) + ": adjLoss:" + adjLoss.toFixed(4) + 
+            console.log(market.name + ": adjLoss:" + adjLoss.toFixed(4) + 
                         " mr:" + mr!.toFixed(4) + " uret: " + uret.toFixed(4))    
             //console.log(market.name + ":cl:" + this.marketMap[market.name].cummulativeLoss.toFixed(4))
         } // end of negative upnl 
@@ -444,7 +444,7 @@ async dbg_get_uret() {
                 //--- print time, actual loss, newcoll, cumLoss
                 
                 let ts = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
-                console.log(ts + ",SCALE:" + market.name +  "notl :" + absNotional.toFixed(4) + " icoll: " + icoll.toFixed(4))
+                console.log(ts + ",SCALE:" + market.name +  "notl :" + absNotional.toFixed(4) + " icoll: " + icoll.toFixed(4) + " uret:" + uret)
             }
         }
           

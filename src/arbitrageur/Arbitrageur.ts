@@ -7,18 +7,23 @@ import { AmountType, Side } from "@perp/common/build/lib/perp/PerpService"
 import { CollateralManager, IClearingHouse } from "@perp/common/build/types/curie"
 import Big from "big.js"
 import { ethers } from "ethers"
-import { padEnd, update } from "lodash"
+import { max, padEnd, update } from "lodash"
 import { Service } from "typedi"
-
 import config from "../configs/config.json"
 require('dotenv').config();
 
+const DEBUG = 0
 //TESTING: block SOLShort: 65131100, 55746888
 //TODO.REFACT put on utility function. Templetize
 const TP_MIN_MR    = 0.12  // 8.33x
 const TP_MR_DEC_SZ = 0.02
 const TP_MAX_MR    = 0.50 
 const TP_MR_INC_SZ = 0.02  // OJO you INC onStopLoss 5x
+
+interface Result<T> {
+    error?: Error;
+    value: T | null;
+  }
 
 // below not used remove
 const OP_USDC_ADDR = '0x7F5c764cBc14f9669B88837ca1490cCa17c31607'
@@ -212,49 +217,6 @@ async dbg_get_uret() {
         }
     }
 
-
-    private async isBelowPerpMarginRatio(criterion: number) {
-        //const marginRatio = await this.perpService.getMarginRatio(this.wallet.address)
-        this.log.jinfo({
-            event: "PerpMarginRatio",
-            //params: { marginRatio: marginRatio === null ? null : +marginRatio },
-        })
-        //return marginRatio !== null && marginRatio.lt(criterion)
-    }
-
-    private async isScaleTresh(mkt: string):  Promise<boolean>  {
-        //TODO.NEXT refactor out this common code to main routine
-        //----- common with stoploss refactor out
-        //const OP_USDC_ADDR = '0x7F5c764cBc14f9669B88837ca1490cCa17c31607'
-        let wlt = this.ethService.privateKeyToWallet(this.pkMap.get(mkt)!)
-
-        // thresh for fhis mkt
-        //const mmr = this.marketMap[mkt].maxMarginRatio
-
-        //const upnl =  (await this.perpService.getOwedAndUnrealizedPnl(wlt.address)).unrealizedPnl
-        //const mr = await this.perpService.getMarginRatio(wlt.address)
-        // TODO.OPTM make it a this param
-        const vault = this.perpService.createVault()
-        //const collatCurr = (await vault.getBalanceByToken(wlt.address, OP_USDC_ADDR)) / 10**6
-        //TODO.NXT add pending funding to p
-        //let uret = (collat + upnl.toNumber())/collat
-        //------------- commonif
-
-        // check if excessive positive unrealizedReturn i.e approaching DC deceleration of compounding rate
-        let collat = this.marketMap[mkt].collateral
-        const upnl =  (await this.perpService.getOwedAndUnrealizedPnl(wlt.address)).unrealizedPnl
-
-        //let uret = 1 + ((collatCurr + upnl.toNumber()) - collatInitial)/collatInitial
-        let uret = 1 + upnl.toNumber()/collat
-        if( uret > this.marketMap[mkt].maxReturn ){ 
-            console.log(mkt + " SCALE: "+ mkt + "curcoll: " + collat)
-            return true; 
-        }
-        return false
-        // NO more MR triggers
-        //return mr !== null && mr.gt(mmr)
-    }
-
     
  // TODO move to butil file
  async open(wlt: ethers.Wallet, btoken: string, side: Side, usdAmount: number ) {
@@ -278,13 +240,129 @@ async dbg_get_uret() {
             this.ethService.rotateToNextEndpoint()
             await this.closePosition(wlt!, btoken, undefined,undefined,undefined)
             console.log("closed...")
+            // AYB Making it throwable
+            throw e
         }
  }
- 
-    async arbitrage(market: Market) {
-        // TODO.OPTM make it a this param
-        //const vault = this.perpService.createVault()
+       
+//----------------------------------------------------------------------------------------------------------
+// TODO
+// Return: realizedLoss or  null if condition not met: return on collateral (roc)  < TP_MIN_ROC
+// SideEffect
+// Error: throw if unable to open/close
+//----------------------------------
+maxCumLossCheck(mkt: Market): Result<number> { return {value: null } }
+//----------------------------------------------------------------------------------------------------------
+// DESC: if both dados are stopped then is end of roll and rethrow both dados
+// COND-ACT: 
+// SIDEff: startCollateral at the very beginging rather than read from config
+// TODO.FIX rmv collatera reding from config
+// Error: throw if unable to open/close
+//----------------------------------
+async rollEndCheck(market: Market): Promise<void> {
+    const vault = this.perpService.createVault()
 
+    // cmp collat, freec if the same this dado ended. if twin also ended then is end of ROLL
+    let wlt = this.ethService.privateKeyToWallet(this.pkMap.get(market.name)!)
+
+    const coll =  (await this.perpService.getAccountValue(wlt.address)).toNumber()
+    const freec = (await this.perpService.getFreeCollateral(wlt.address)).toNumber()
+
+    if (coll == freec) {
+        // dado stopped. lets check if twin also stopped
+        let twin, tside, side = null
+        if ( market.name.endsWith("SHORT") ) {
+            twin = market.name.split("_")[0]
+            tside = Side.LONG
+            side = Side.SHORT
+        } else {
+            twin = market.name + "_SHORT"
+            tside = Side.SHORT
+            side = Side.LONG
+        }
+        let twlt = this.ethService.privateKeyToWallet(this.pkMap.get(twin)!)
+        let tcol = (await this.perpService.getAccountValue(twlt.address)).toNumber()
+        let tfreec = (await this.perpService.getFreeCollateral(twlt.address)).toNumber()
+
+        if (tcol == tfreec) { 
+            // both dados stopped OR first time running. either way new roll and startColl to actual
+            //TODO.ASSERT startCollat == margin
+            this.marketMap[market.name].startCollateral = coll
+            this.marketMap[twin].startCollateral = tcol
+
+            // upda
+            await this.open(wlt!,this.marketMap[market.name].baseToken,side,coll*this.marketMap[market.name].leverage)
+            await this.open(twlt!,this.marketMap[twin].baseToken,tside,tcol*this.marketMap[twin].leverage)
+            console.log("ROLL:START: " + market.name + " " + coll.toFixed(4) + "," + tcol.toFixed(4))
+        }
+    }
+  }
+//----------------------------------------------------------------------------------------------------------
+// OJO: CURRENTLY combining lMit and maxLoss. into tmpMitCheck for w-end urn
+// COND-ACT: on TP_MAX_LOSS close leg. When twin MAX_LOSS (pexit) rollStateCheck will restart
+// SIDEff: mkt.startCollatera onClose
+// Error: throws open/close
+//----------------------------------
+
+async wknd_Z_lMitCheck(market: Market): Promise<Result<number>> {
+    // get NUV net usd value aka collateral + pnl. at close == freec (free collateral) and startCollateral
+    // to compute roc
+    let aloss = null
+    let wlt = this.ethService.privateKeyToWallet(this.pkMap.get(market.name)!)
+
+    //startCollatr
+    let collatbasis = this.marketMap[market.name].startCollateral
+    const freec = (await this.perpService.getFreeCollateral(wlt.address)).toNumber()
+    const colpnl = collatbasis - freec
+  
+    let uret = 1 - colpnl/collatbasis
+    if (uret < config.TP_MAX_ROLL_LOSS ) {
+        await this.close( wlt!, market.baseToken) 
+        // BTW freec == collateral after close
+        let ncoll = (await this.perpService.getAccountValue(wlt.address)).toNumber()
+        this.marketMap[market.name].startCollateral = ncoll
+        console.log("ROLL.Dado[ " + market.name + " ] END, newcoll" + ncoll)
+    }
+    // return a non-null to exit routine
+    return { value: colpnl }
+  }
+
+
+    async arbitrage(market: Market) {
+        // routine checks in order of importance:
+        // 1. MaxLoss check. CONDition on collat pnl (not position) relativ to startCollateral (updated on RollSTART)
+        //                   RETurn loss? [or null]
+        //                   SideEffects: ROLL.state 
+        // 2. Delevrj check. CONDition on fcc: free collat change e.g if fcc drops below 0.2 of initial
+        //    RETurn realized collat dec/inc 
+        //    SIDEffects: collat, lvrj
+        // 3. Pexit   check. CONDition on absolute free collat eg freec < $1
+        //    RET profit rel to startColl
+        // 4. Scale   check. CONDition on fcc e.g > 1.4
+        // Avoid premature optimization OK to recalculate to avoid globals and make handlers self contrain
+        // TODO.OPTM make it a this param
+        //-------------------
+        
+        // exit as soon as one of the checks yieds a result. note that all the funcs throw so will be catched here
+        try { 
+            await this.rollEndCheck(market)  
+            if ( (await this.wknd_Z_lMitCheck(market)).value ) return
+            // OJO disabling all checks for Z-wend run. REMOVE ME on LUNDI   <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+            /*
+            if ( await?? this.maxLossCheck(market).value) return  
+            if ( this.pexiLMitCheck(market).value) return
+            if ( this.delevrjCheck(market).value) return
+            if ( this.scaleCheck(market).value) return
+            */
+            
+            
+        }
+        catch {
+
+        }
+    }
+      
+/* HIDE        
         //--- Get pnl/free collat
         //--- factor out to avoid recomputing unnecesary on most cycles
         let wlt = this.ethService.privateKeyToWallet(this.pkMap.get(market.name)!)
@@ -400,6 +478,7 @@ async dbg_get_uret() {
                         " mr:" + mr!.toFixed(4) + " uret: " + uret.toFixed(4))    
             //console.log(market.name + ":cl:" + this.marketMap[market.name].cummulativeLoss.toFixed(4))
         } // end of negative upnl 
+
         //--------------------------------------------------------------------------------------------------------------------
         //   Handle positive pnl 
         //--------------------------------------------------------------------------------------------------------------------
@@ -410,10 +489,9 @@ async dbg_get_uret() {
         // mrZero = [icoll + DLT(N)]/N => icoll = mrz*N - [N-Nbasis]
         // notionalBasis will be the highest running peak
         // 1. mar checking
-
         let upnl = mr*absNotional - this.marketMap[market.name].collateral 
         //if ( (perpPnl > 0) && (absNotional > this.marketMap[market.name].notionalBasis) ) {
-            if ( (perpPnl > 0) && ((upnl > this.marketMap[market.name].maxPnl) ) ) {  
+        if ( (perpPnl > 0) && ((upnl > this.marketMap[market.name].maxPnl) ) ) {  
                 this.marketMap[market.name].maxPnl = upnl
                 let icoll = this.marketMap[market.name].collateral + config.TP_EXECUTION_HAIRCUT*upnl
             //let mrZero = 1/this.marketMap[market.name].resetLeverage
@@ -436,6 +514,9 @@ async dbg_get_uret() {
                         await this.open(wlt!,this.marketMap[market.name].baseToken,side,adjRet*newlvrj)
                         //compute change in coll (abs return) [(mr*posVal-pnl), where pnl = 0 right after open] - collzero
                         let mr = (await this.perpService.getMarginRatio(wlt.address))!.toNumber()
+
+                        //STOP PREMATURE OPTIMIZATON!!!! recompute absNotional it has changed!!! 
+                        let absNotional = (await this.perpService.getTotalAbsPositionValue(wlt.address)).toNumber() 
                         actualProfit = mr!*absNotional - this.marketMap[market.name].collateral
                     }
                     else { // amount too small to execute but still count as an (urealiaze) loss
@@ -466,6 +547,7 @@ async dbg_get_uret() {
                 console.log(ts + ",SCALE:" + market.name +  "notl :" + absNotional.toFixed(4) + " icoll: " + icoll.toFixed(4) + " uret:" + uret)
             }
         }
+HIDE */       
           
 
         /*
@@ -566,7 +648,7 @@ async dbg_get_uret() {
                 }
             this.log.jinfo( {event: "Scale", params: { mkt: market.name, 
                                                        nlevrj: newlvrj, ncoll: +newcoll},} )
-        }*/
+        }
         
-    }
+    }*/
 }

@@ -290,9 +290,12 @@ async rollEndCheck(market: Market): Promise<void> {
             this.marketMap[market.name].startCollateral = coll
             this.marketMap[twin].startCollateral = tcol
 
-            // upda
             await this.open(wlt!,this.marketMap[market.name].baseToken,side,coll*this.marketMap[market.name].leverage)
             await this.open(twlt!,this.marketMap[twin].baseToken,tside,tcol*this.marketMap[twin].leverage)
+            // freecol will be used as basis to infere colpnl
+            this.marketMap[market.name].startCollateral = coll
+            this.marketMap[twin].startCollateral = tcol
+
             console.log("ROLL:START: " + market.name + " " + coll.toFixed(4) + "," + tcol.toFixed(4))
         }
     }
@@ -304,19 +307,18 @@ async rollEndCheck(market: Market): Promise<void> {
 // Error: throws open/close
 //----------------------------------
 
-async wknd_Z_lMitCheck(market: Market): Promise<Result<number>> {
-    // get NUV net usd value aka collateral + pnl. at close == freec (free collateral) and startCollateral
-    // to compute roc
-    let aloss = null
+async wknd_Z_lMitCheck(market: Market): Promise<Result<boolean>> {
+    let check = false // assume negative. on positive the check will cause to exit
     let wlt = this.ethService.privateKeyToWallet(this.pkMap.get(market.name)!)
 
-    //startCollatr
+    //measure colpnl by looking at how current collateral value NCV (net of unrialized pnl) changes from startCollateral
     let collatbasis = this.marketMap[market.name].startCollateral
-    const freec = (await this.perpService.getFreeCollateral(wlt.address)).toNumber()
-    const colpnl = collatbasis - freec
+    const ccval = (await this.perpService.getAccountValue(wlt.address)).toNumber()
+    const cpnl = ccval - collatbasis
   
-    let uret = 1 - colpnl/collatbasis
+    let uret = 1 + cpnl/collatbasis
     if (uret < config.TP_MAX_ROLL_LOSS ) {
+        check = true // mark check positive 
         await this.close( wlt!, market.baseToken) 
         // BTW freec == collateral after close
         let ncoll = (await this.perpService.getAccountValue(wlt.address)).toNumber()
@@ -324,9 +326,9 @@ async wknd_Z_lMitCheck(market: Market): Promise<Result<number>> {
         console.log("ROLL.Dado[ " + market.name + " ] END, newcoll" + ncoll)
     }
     // return a non-null to exit routine
-    return { value: colpnl }
+    console.log(market.name + " ccval:" + ccval.toFixed(2) + " uret:" + uret.toFixed(4) )
+    return { value: check }
   }
-
 
     async arbitrage(market: Market) {
         // routine checks in order of importance:

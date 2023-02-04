@@ -269,7 +269,7 @@ async rollEndCheck(market: Market): Promise<void> {
     const freec = (await this.perpService.getFreeCollateral(wlt.address)).toNumber()
 
     if (coll == freec) {
-        // dado stopped. lets check if twin also stopped
+        // this dado stopped. lets check if twin also stopped
         let twin, tside, side = null
         if ( market.name.endsWith("SHORT") ) {
             twin = market.name.split("_")[0]
@@ -303,33 +303,35 @@ async rollEndCheck(market: Market): Promise<void> {
 //----------------------------------------------------------------------------------------------------------
 // OJO: CURRENTLY combining lMit and maxLoss. into tmpMitCheck for w-end urn
 // COND-ACT: on TP_MAX_LOSS close leg. When twin MAX_LOSS (pexit) rollStateCheck will restart
-// SIDEff: mkt.startCollatera onClose
+// SIDEff: mkt.startCollatera onClose and also on new peak
 // Error: throws open/close
+// NOTE: when dado is stopped 
 //----------------------------------
 
 async wknd_Z_lMitCheck(market: Market): Promise<Result<boolean>> {
     let check = false // assume negative. on positive the check will cause to exit
     let wlt = this.ethService.privateKeyToWallet(this.pkMap.get(market.name)!)
-
-    //measure colpnl by looking at how current collateral value NCV (net of unrialized pnl) changes from startCollateral
+    // collatbasis is the peak colateral vaue
     let collatbasis = this.marketMap[market.name].startCollateral
     const ccval = (await this.perpService.getAccountValue(wlt.address)).toNumber()
     const cpnl = ccval - collatbasis
-  
+    // note: if dado stopped it will just return false coz uret = 1.0000
     let uret = 1 + cpnl/collatbasis
     if (uret < config.TP_MAX_ROLL_LOSS ) {
         check = true // mark check positive 
+        
         await this.close( wlt!, market.baseToken) 
         // BTW freec == collateral after close
         let ncoll = (await this.perpService.getAccountValue(wlt.address)).toNumber()
         this.marketMap[market.name].startCollateral = ncoll
         console.log("ROLL.Dado[ " + market.name + " ] END, newcoll" + ncoll)
     }
-    // return a non-null to exit routine
-    console.log(market.name + " ccval:" + ccval.toFixed(2) + " uret:" + uret.toFixed(4) )
+    // update basis i.e startCollat if new peak. actually startCollat should be called just basisCollat
+    // and init from config or on new roll
+    if (ccval > collatbasis) { this.marketMap[market.name].startCollateral = ccval }  
+    console.log(market.name + " cbasis:" + this.marketMap[market.name].startCollateral.toFixed(2) + " uret:" + uret.toFixed(4))
     return { value: check }
   }
-
     async arbitrage(market: Market) {
         // routine checks in order of importance:
         // 1. MaxLoss check. CONDition on collat pnl (not position) relativ to startCollateral (updated on RollSTART)

@@ -12,7 +12,11 @@ import { Service } from "typedi"
 import config from "../configs/config.json"
 require('dotenv').config();
 
-const DEBUG = 0
+// typedefs
+type BaseTokenAddr = string
+type EthersWallet = ethers.Wallet
+type closeFuncType = (arg1: EthersWallet, arg2: BaseTokenAddr) => Promise<void>
+
 //TESTING: block SOLShort: 65131100, 55746888
 //TODO.REFACT put on utility function. Templetize
 const TP_MIN_MR    = 0.12  // 8.33x
@@ -74,6 +78,7 @@ export class Arbitrageur extends BotService {
     private pkMap = new Map<string, string>()
     private marketMap: { [key: string]: Market } = {}
     private readonly arbitrageMaxGasFeeEth = Big(config.ARBITRAGE_MAX_GAS_FEE_ETH)
+    private closedHolos: string[] = []
 
 //----------------------------------------------------------------------------------------
 // DBG/ manual
@@ -251,7 +256,14 @@ async dbg_get_uret() {
 // SideEffect
 // Error: throw if unable to open/close
 //----------------------------------
-maxCumLossCheck(mkt: Market): Result<number> { return {value: null } }
+//maxCumLossCheck(mkt: Market): Result<number> { return {value: null } }
+
+//----------------------------------
+async rollStartCheck(market: Market): Promise<void> { 
+    console.error("Not Implemented yet") 
+    // if ROLL.end for both AND holos.direction null then open both
+    // if QROM SHORT/LONG i.e selloff/rally only long/short side
+}
 //----------------------------------------------------------------------------------------------------------
 // DESC: if both dados are stopped then is end of roll and rethrow both dados
 // COND-ACT: 
@@ -300,6 +312,53 @@ async rollEndCheck(market: Market): Promise<void> {
         }
     }
   }
+
+async qromDeathRowCheck( side: Side) : Promise<Result<boolean>> {
+    let check = null
+    let errStr = ""
+    // only get the [Mkt - HolosClose] ie set diff of M from side that are *still* open AND not in holosClosed
+    let diff = Object.values(this.marketMap).map(m => m.name).filter((n) => !this.closedHolos.includes(n))
+
+    // WP first. put on deathrow shrinked collat. later use uret below TP_QROM_MIN e.g 95
+    let funcs: Array< closeFuncType > = []
+
+    if(diff.length)
+        for (const m of diff ) {
+            const w = this.ethService.privateKeyToWallet(m)
+            const b = this.marketMap[m].baseToken
+            const n = this.marketMap[m].name
+            try {
+                await this.close(w,b)
+                delete this.marketMap[n]
+            }
+            catch {
+                errStr += "QRM.Close failed:" + n 
+            }
+            check = true
+            /* 
+            const invk = async (arg1: EthersWallet, arg2: BaseTokenAddr) => { return this.close(arg1,arg2) }
+            funcs.push(invk)
+            Promise.all(funcs)
+            */
+        }
+    return {value: check, error: Error(errStr) }
+}
+
+// qrom.close. if crossed threshold send a list of arrest to filter deathrows
+async qromThreshCheck() :Promise<Result<Side>> {
+    // get count of longs to shorts
+    let shortRatio = this.closedHolos.filter(s => s.endsWith("SHORT")).length/this.closedHolos.length
+
+    if (shortRatio > 2/3 ) { console.log("QROM shortRatio:" + shortRatio)
+        console.log("QROM shortRatio:" + shortRatio)
+        return  { value:Side.SHORT }
+    }
+    if (shortRatio < 1/3 ) {
+        console.log("QROM shortRatio:" + shortRatio)
+        return  { value:Side.LONG }
+    }
+    return  { value: null }
+}  
 //----------------------------------------------------------------------------------------------------------
 // OJO: CURRENTLY combining lMit and maxLoss. into tmpMitCheck for w-end urn
 // COND-ACT: on TP_MAX_LOSS close leg. When twin MAX_LOSS (pexit) rollStateCheck will restart
@@ -308,7 +367,7 @@ async rollEndCheck(market: Market): Promise<void> {
 // NOTE: when dado is stopped 
 //----------------------------------
 
-async wknd_Z_lMitCheck(market: Market): Promise<Result<boolean>> {
+async maxLossCheck(market: Market): Promise<Result<boolean>> {
     let check = false // assume negative. on positive the check will cause to exit
     let wlt = this.ethService.privateKeyToWallet(this.pkMap.get(market.name)!)
     // collatbasis is the peak colateral vaue
@@ -325,10 +384,15 @@ async wknd_Z_lMitCheck(market: Market): Promise<Result<boolean>> {
         let ncoll = (await this.perpService.getAccountValue(wlt.address)).toNumber()
         this.marketMap[market.name].startCollateral = ncoll
         console.log("ROLL.Dado[ " + market.name + " ] END, newcoll" + ncoll)
+        // inc closed count and qrom.closed.check
+        this.closedHolos.push(market.name)
+        return { value: check }
     }
     // update basis i.e startCollat if new peak. actually startCollat should be called just basisCollat
     // and init from config or on new roll
-    if (ccval > collatbasis) { this.marketMap[market.name].startCollateral = ccval }  
+    if (ccval > collatbasis) { 
+        this.marketMap[market.name].startCollateral = ccval 
+    }  
     console.log(market.name + " cbasis:" + this.marketMap[market.name].startCollateral.toFixed(2) + " uret:" + uret.toFixed(4))
     return { value: check }
   }
@@ -349,8 +413,16 @@ async wknd_Z_lMitCheck(market: Market): Promise<Result<boolean>> {
         
         // exit as soon as one of the checks yieds a result. note that all the funcs throw so will be catched here
         try { 
+            let holosSide = null
             await this.rollEndCheck(market)  
-            if ( (await this.wknd_Z_lMitCheck(market)).value ) return
+            if ( (await this.maxLossCheck(market)).value ) { // have a positive => close took place. check for qrom crossing
+                if (holosSide = (await this.qromThreshCheck()).value) {    // if positive return which side lon/short is qrom
+                    await this.qromDeathRowCheck(holosSide) // all NOT closed on this side that meet qromDeath
+                }
+                // mktList may changed. restart routine
+                return
+            }
+            await this.rollStartCheck(market)  
             // OJO disabling all checks for Z-wend run. REMOVE ME on LUNDI   <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
             /*
             if ( await?? this.maxLossCheck(market).value) return  
@@ -358,8 +430,6 @@ async wknd_Z_lMitCheck(market: Market): Promise<Result<boolean>> {
             if ( this.delevrjCheck(market).value) return
             if ( this.scaleCheck(market).value) return
             */
-            
-            
         }
         catch {
 

@@ -260,7 +260,7 @@ async dbg_get_uret() {
 
 //----------------------------------
 async rollStartCheck(market: Market): Promise<void> { 
-    console.error("Not Implemented yet") 
+    //console.error("Not Implemented yet") 
     // if ROLL.end for both AND holos.direction null then open both
     // if QROM SHORT/LONG i.e selloff/rally only long/short side
 }

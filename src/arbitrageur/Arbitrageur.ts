@@ -26,7 +26,7 @@ const TP_MR_INC_SZ = 0.02  // OJO you INC onStopLoss 5x
 
 interface Result<T> {
     error?: Error;
-    value: T | null;
+    positive: T | null;
   }
 
 // below not used remove
@@ -43,7 +43,10 @@ function transformValues(map: Map<string, string>,
   // scale down/up. virtual collateral is the 'peak' unrealized collateral
 
 interface Market {
+    wallet: Wallet
+    side: Side
     name: string
+    active: boolean
     baseToken: string
     poolAddr: string
     minReturn: number
@@ -52,6 +55,7 @@ interface Market {
     maxMarginRatio: number
     collateral: number
     startCollateral: number
+    twin: string
 //    peakCollateral: number
     resetLeverage: number
     leverage: number
@@ -78,7 +82,8 @@ export class Arbitrageur extends BotService {
     private pkMap = new Map<string, string>()
     private marketMap: { [key: string]: Market } = {}
     private readonly arbitrageMaxGasFeeEth = Big(config.ARBITRAGE_MAX_GAS_FEE_ETH)
-    private closedHolos: string[] = []
+    private holosSide: Side | null = null
+    //private closedHolos: string[] = []
 
 //----------------------------------------------------------------------------------------
 // DBG/ manual
@@ -163,6 +168,9 @@ async dbg_get_uret() {
             
             this.marketMap[marketName] = {
                 name: marketName,
+                active: true,
+                wallet: this.ethService.privateKeyToWallet(this.pkMap.get(marketName)!),
+                side: marketName.endsWith("SHORT") ? Side.SHORT : Side.LONG,
                 baseToken: pool.baseAddress,
                 poolAddr: pool.address,
                 //TODO.RMV order amount
@@ -181,7 +189,8 @@ async dbg_get_uret() {
                 notionalBasis: config.TP_START_CAP*market.RESET_LEVERAGE,
                 //TODO.rmv
                 resetNeeded: false,
-                resetSize:0
+                resetSize:0,
+                twin: marketName.endsWith("SHORT") ? marketName.split("_")[0] : marketName + "_SHORT"
             }
         }
     }
@@ -249,7 +258,7 @@ async dbg_get_uret() {
             throw e
         }
  }
-       
+ 
 //----------------------------------------------------------------------------------------------------------
 // TODO
 // Return: realizedLoss or  null if condition not met: return on collateral (roc)  < TP_MIN_ROC
@@ -259,10 +268,33 @@ async dbg_get_uret() {
 //maxCumLossCheck(mkt: Market): Result<number> { return {value: null } }
 
 //----------------------------------
-async rollStartCheck(market: Market): Promise<void> { 
-    //console.error("Not Implemented yet") 
-    // if ROLL.end for both AND holos.direction null then open both
-    // if QROM SHORT/LONG i.e selloff/rally only long/short side
+// At this point all close/open were followed by a deactivate/reactivate but will do a physical check
+// for this mkt and if holos.null activate if not active already. if holos.side make/keep open only 
+// if on right side
+
+async rollStartTest(market: Market): Promise<Result<boolean>> { 
+    let check = false
+    let mkt = this.marketMap[market.name]
+    // robustness: do a physical check 
+    let pos = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
+    // if null mkt we now for sure it needs to be active if not open already
+    // open if a) not already open b) mkt is aligned OR null
+    let reopenCond = (pos == 0) && ( (this.holosSide == (null || mkt.side)) )
+
+    if (reopenCond) {
+        let sz = this.marketMap[market.name].startCollateral * this.marketMap[market.name].leverage
+        try {
+            await this.open(mkt.wallet,mkt.baseToken,mkt.side,sz)
+            this.marketMap[market.name].active = true
+            check = true
+        }
+        catch(err) {
+            console.error("OPEN FAILED in rollStartCheck")
+        }
+        let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
+        console.log(tstmp + ": ROLL.DADO[" + market.name + "] Side:" + this.holosSide)
+    }
+    return { positive: check}
 }
 //----------------------------------------------------------------------------------------------------------
 // DESC: if both dados are stopped then is end of roll and rethrow both dados
@@ -271,9 +303,29 @@ async rollStartCheck(market: Market): Promise<void> {
 // TODO.FIX rmv collatera reding from config
 // Error: throw if unable to open/close
 //----------------------------------
-async rollEndCheck(market: Market): Promise<void> {
-    const vault = this.perpService.createVault()
+// REMOVE ME
+/*
+async rollEndCheck(market: Market): Promise<Result<boolean>> {
+// overkill is just returning condition: (!mkt.active && !mkt.twin.active)
+// can be taken out if you add mkt.twin property
 
+    let check = false
+    // if market is still active then the condition is false. dont bother check twin
+    if (this.marketMap[market.name].active) { return {result: check}}
+    // check if twin is active
+    let twin, tside, side = null
+    if ( market.name.endsWith("SHORT") ) {
+            twin = market.name.split("_")[0]
+    } else {
+            twin = market.name + "_SHORT"
+    }
+    if(this.marketMap[twin].active == false) {
+        // both dados inactive => ROLL.END
+        check = true
+    }
+    return { result: check} 
+/*
+    const vault = this.perpService.createVault()
     // cmp collat, freec if the same this dado ended. if twin also ended then is end of ROLL
     let wlt = this.ethService.privateKeyToWallet(this.pkMap.get(market.name)!)
 
@@ -281,7 +333,8 @@ async rollEndCheck(market: Market): Promise<void> {
     const freec = (await this.perpService.getFreeCollateral(wlt.address)).toNumber()
 
     if (coll == freec) {
-        // this dado stopped. lets check if twin also stopped
+        // this dado stopped. set to inactive and then check if twin also stopped ie inactive
+        this.marketMap[market.name].active = false
         let twin, tside, side = null
         if ( market.name.endsWith("SHORT") ) {
             twin = market.name.split("_")[0]
@@ -292,44 +345,66 @@ async rollEndCheck(market: Market): Promise<void> {
             tside = Side.SHORT
             side = Side.LONG
         }
-        let twlt = this.ethService.privateKeyToWallet(this.pkMap.get(twin)!)
-        let tcol = (await this.perpService.getAccountValue(twlt.address)).toNumber()
-        let tfreec = (await this.perpService.getFreeCollateral(twlt.address)).toNumber()
+        
+        if( this.marketMap[twin].active = false) {
+            // both dados inactive => ROLL.END
+            check = true
+            console.log("ROLL END: " + market.name + " " + coll.toFixed(4) + "," + twinCol.toFixed(4))
+        }
 
-        if (tcol == tfreec) { 
+        let twinWlt = this.ethService.privateKeyToWallet(this.pkMap.get(twin)!)
+        let twinCol = (await this.perpService.getAccountValue(twinWlt.address)).toNumber()
+        let twinFreec = (await this.perpService.getFreeCollateral(twinWlt.address)).toNumber()
+
+        if (twinCol == twinFreec) { 
             // both dados stopped OR first time running. either way new roll and startColl to actual
             //TODO.ASSERT startCollat == margin
-            this.marketMap[market.name].startCollateral = coll
-            this.marketMap[twin].startCollateral = tcol
-
-            await this.open(wlt!,this.marketMap[market.name].baseToken,side,coll*this.marketMap[market.name].leverage)
-            await this.open(twlt!,this.marketMap[twin].baseToken,tside,tcol*this.marketMap[twin].leverage)
-            // freecol will be used as basis to infere colpnl
-            this.marketMap[market.name].startCollateral = coll
-            this.marketMap[twin].startCollateral = tcol
-
-            console.log("ROLL:START: " + market.name + " " + coll.toFixed(4) + "," + tcol.toFixed(4))
+           check = true
+            console.log("ROLL END: " + market.name + " " + coll.toFixed(4) + "," + twinCol.toFixed(4))
         }
+        
     }
+    return { value: check }
+    
   }
+*/
 
-async qromDeathRowCheck( side: Side) : Promise<Result<boolean>> {
-    let check = null
+//-----------------------------------------------------------------------------------------------------------
+// Positive means some death execution took place
+// ASSERT holosSide is NOT null
+async qromDeathRowTest() : Promise<Result<boolean>> {
+    let check = false
     let errStr = ""
+    // only the undead can be killed
+    let activeMkts = Object.values(this.marketMap).filter(m => m.active == true).map( m => m.name)
+
+    // group by long/shorts
+    const longShortGroups = activeMkts.reduce<{ short: string[], long: string[] }>
+                            ((acc, item) => {
+                             item.endsWith("SHORT") ? acc.short.push(item) : acc.long.push(item); return acc;
+                            }, { short: [], long: [] })
+    // put on death row mkts in the 'wrong' side                        
+    let deathrow = this.holosSide == Side.SHORT ? longShortGroups.long : longShortGroups.short
+    // pardon the ones with positive return relative to startCollateral. For now only condition for pardon is
+
+    // collatera/startCollateral > 1.01 later more granualar condition can be used
+    let pardonned = Object.values(deathrow).filter
+       ( (n) => this.marketMap[n].collateral/this.marketMap[n].startCollateral > config.TP_MIN_PARDON_RATIO )
+    // remove pardonned from deathrow  
+    let toExecute = deathrow.filter( (n) => !pardonned.includes(n) )
     // only get the [Mkt - HolosClose] ie set diff of M from side that are *still* open AND not in holosClosed
-    let diff = Object.values(this.marketMap).map(m => m.name).filter((n) => !this.closedHolos.includes(n))
+    //let diff = Object.values(this.marketMap).map(m => m.name).filter((n) => !this.closedHolos.includes(n))
 
-    // WP first. put on deathrow shrinked collat. later use uret below TP_QROM_MIN e.g 95
-    let funcs: Array< closeFuncType > = []
+    let funcs: Array<closeFuncType> = []
 
-    if(diff.length)
-        for (const m of diff ) {
+    if(toExecute.length)
+        for (const m of deathrow ) {
             const w = this.ethService.privateKeyToWallet(m)
             const b = this.marketMap[m].baseToken
             const n = this.marketMap[m].name
             try {
                 await this.close(w,b)
-                delete this.marketMap[n]
+                this.marketMap[n].active = false
             }
             catch {
                 errStr += "QRM.Close failed:" + n 
@@ -341,23 +416,68 @@ async qromDeathRowCheck( side: Side) : Promise<Result<boolean>> {
             Promise.all(funcs)
             */
         }
-    return {value: check, error: Error(errStr) }
+    return {positive: check, error: Error(errStr) }
 }
 
 // qrom.close. if crossed threshold send a list of arrest to filter deathrows
-async qromThreshCheck() :Promise<Result<Side>> {
-    // get count of longs to shorts
-    let shortRatio = this.closedHolos.filter(s => s.endsWith("SHORT")).length/this.closedHolos.length
+// test positive means is NOT null and turned to one Side
+// positive if there is a HolosRegime change from one of the 3 states null, long, short
+// regime switch is based on qurom on BOTH active/inactive mkts with a minum number of long/short
+// required e.g for 2/3 then 5 modulus 2*5/3 => 2 for 6  => modulus 2*6/3 = 4
+// criteria to count towards minimum is collateral return is below TP_COLRATIO_MAX which should be 
+// <= TP_MAX_LOSS
+// ASSERT TP_MIN_COL_RATIO > TP_MAX_LOSS
+async regimeSwitchTest() :Promise<Result<boolean>> {
+    let check = false
+    
+    // find minimum number of long/short mkts to switch from neutral based on a ration e.g 2/3
+    let sideGroupCount = Object.keys(this.marketMap).length
+    // minimum side group to meet the 2/3 quorom
+    let minQrmCount = Math.floor(2*sideGroupCount/3) 
+    // split mkts into long and short
+    const longShortGrp = Object.values(this.marketMap).map( m => m.name).reduce<{ short: string[], long: string[] }>
+                            ((acc, item) => {
+                             item.endsWith("SHORT") ? acc.short.push(item) : acc.long.push(item); return acc;
+                            }, { short: [], long: [] })
+
+    let longLR = longShortGrp.long.filter
+       ( n => this.marketMap[n].collateral/this.marketMap[n].startCollateral < config.TP_MIN_COL_RATIO )
+
+    let shortLR = longShortGrp.short.filter
+       ( n => this.marketMap[n].collateral/this.marketMap[n].startCollateral < config.TP_MIN_COL_RATIO ) 
+    
+    if (longLR.length >= minQrmCount && shortLR.length < minQrmCount) {
+        this.holosSide = Side.LONG
+        check = true
+        let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
+        console.log(tstmp + ": RegimeSwitch:" + this.holosSide)
+    }
+    else if (shortLR.length >= minQrmCount && longLR.length < minQrmCount) {
+       this.holosSide = Side.SHORT
+       check = true
+       let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
+        console.log(tstmp + ": RegimeSwitch:" + this.holosSide)
+    }
+    else {  // no sides. reset to null
+        this.holosSide = null
+    }
+    return  { positive: check }
+
+    /* get count of longs to shorts from active markets
+    let activeMkts = Object.values(this.marketMap).filter(m => m.active == true).map( m => m.name)
+    let shortRatio = activeMkts.filter(s => s.endsWith("SHORT")).length/activeMkts.length
 
     if (shortRatio > 2/3 ) { console.log("QROM shortRatio:" + shortRatio)
+        check = true
+        this.holosSide = Side.SHORT 
         console.log("QROM shortRatio:" + shortRatio)
-        return  { value:Side.SHORT }
     }
     if (shortRatio < 1/3 ) {
+        check = true
         console.log("QROM shortRatio:" + shortRatio)
-        return  { value:Side.LONG }
-    }
-    return  { value: null }
+        this.holosSide = Side.LONG 
+    }*/
+    
 }  
 //----------------------------------------------------------------------------------------------------------
 // OJO: CURRENTLY combining lMit and maxLoss. into tmpMitCheck for w-end urn
@@ -367,35 +487,41 @@ async qromThreshCheck() :Promise<Result<Side>> {
 // NOTE: when dado is stopped 
 //----------------------------------
 
-async maxLossCheck(market: Market): Promise<Result<boolean>> {
-    let check = false // assume negative. on positive the check will cause to exit
-    let wlt = this.ethService.privateKeyToWallet(this.pkMap.get(market.name)!)
-    // collatbasis is the peak colateral vaue
-    let collatbasis = this.marketMap[market.name].startCollateral
-    const ccval = (await this.perpService.getAccountValue(wlt.address)).toNumber()
-    const cpnl = ccval - collatbasis
-    // note: if dado stopped it will just return false coz uret = 1.0000
-    let uret = 1 + cpnl/collatbasis
-    if (uret < config.TP_MAX_ROLL_LOSS ) {
-        check = true // mark check positive 
-        
-        await this.close( wlt!, market.baseToken) 
-        // BTW freec == collateral after close
-        let ncoll = (await this.perpService.getAccountValue(wlt.address)).toNumber()
-        this.marketMap[market.name].startCollateral = ncoll
-        console.log("ROLL.Dado[ " + market.name + " ] END, newcoll" + ncoll)
-        // inc closed count and qrom.closed.check
-        this.closedHolos.push(market.name)
-        return { value: check }
-    }
-    // update basis i.e startCollat if new peak. actually startCollat should be called just basisCollat
-    // and init from config or on new roll
-    if (ccval > collatbasis) { 
-        this.marketMap[market.name].startCollateral = ccval 
-    }  
-    console.log(market.name + " cbasis:" + this.marketMap[market.name].startCollateral.toFixed(2) + " uret:" + uret.toFixed(4))
-    return { value: check }
+async maxLossTest(market: Market): Promise<Result<boolean>> {
+    // skip if market inactive
+    let check = false
+    if (this.marketMap[market.name].active) { 
+        let wlt = this.ethService.privateKeyToWallet(this.pkMap.get(market.name)!)
+        // collatbasis is the peak colateral vaue
+        let collatbasis = this.marketMap[market.name].startCollateral
+        const ccval = (await this.perpService.getAccountValue(wlt.address)).toNumber()
+        const cpnl = ccval - collatbasis
+        let uret = 1 + cpnl/collatbasis
+        if (uret < config.TP_MAX_ROLL_LOSS ) {
+            check = true // mark check positive 
+            await this.close( wlt!, market.baseToken) 
+            // BTW freec == collateral after close
+            let ncoll = (await this.perpService.getAccountValue(wlt.address)).toNumber()
+            // compute terminal wealth contribution before overwrite
+            let colZero = this.marketMap[market.name].startCollateral 
+            let realizePnl = 1 + (ncoll-colZero)/colZero
+            //update startCollateral to actual
+            this.marketMap[market.name].startCollateral = ncoll
+            let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
+            console.log(tstmp + ": ROLL.Dado[ " + market.name + " ] END, newcoll: " + ncoll + "realizedPnl: " + realizePnl)
+            // deactivate so is not recheck again and so roll state can be determined
+            this.marketMap[market.name].active = false
+            return { positive: check } //report positive on check
+        }
+        // update basis i.e startCollat if new peak. startCollat should be called basisCollat and init from config or on new roll
+        if (ccval > collatbasis) { 
+            this.marketMap[market.name].startCollateral = ccval 
+        }  
+        console.log(market.name + " cbasis:" + this.marketMap[market.name].startCollateral.toFixed(2) + " uret:" + uret.toFixed(4))
+    } // market.active
+    return { positive: check }
   }
+
     async arbitrage(market: Market) {
         // routine checks in order of importance:
         // 1. MaxLoss check. CONDition on collat pnl (not position) relativ to startCollateral (updated on RollSTART)
@@ -413,16 +539,16 @@ async maxLossCheck(market: Market): Promise<Result<boolean>> {
         
         // exit as soon as one of the checks yieds a result. note that all the funcs throw so will be catched here
         try { 
-            let holosSide = null
-            await this.rollEndCheck(market)  
-            if ( (await this.maxLossCheck(market)).value ) { // have a positive => close took place. check for qrom crossing
-                if (holosSide = (await this.qromThreshCheck()).value) {    // if positive return which side lon/short is qrom
-                    await this.qromDeathRowCheck(holosSide) // all NOT closed on this side that meet qromDeath
+            if ( (await this.maxLossTest(market)).positive) {     // have a positive => close took place. check for qrom crossing
+                if ((await this.regimeSwitchTest()).positive) {     // if positive return which side lon/short is qrom
+                    await this.qromDeathRowTest() // all NOT closed on this side that meet qromDeath
                 }
-                // mktList may changed. restart routine
-                return
+            // ROLL.END.Condition: (!mkt.active &&  !mk.twin.active)  NAND => !(mkt.active && mkt.twin.active)  
+            if ( !market.active && !(this.marketMap[market.twin].active) )
+                // who needs to wake up
+                await this.rollStartTest(market)  
             }
-            await this.rollStartCheck(market)  
+            
             // OJO disabling all checks for Z-wend run. REMOVE ME on LUNDI   <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
             /*
             if ( await?? this.maxLossCheck(market).value) return  

@@ -118,7 +118,7 @@ async dbg_get_uret() {
     let test =  await this.perpService.getTotalPositionSize(wlt.address, perpBaseToken)
     let vault = await this.perpService.createVault()
 
-    const initalCollateral = this.marketMap[mkt].collateral
+    const initalCollateral = this.marketMap[mkt].startCollateral
     const currCollateral = (await vault.getBalanceByToken(wlt.address, OP_USDC_ADDR)) / 10**6
     const upnl =  (await this.perpService.getOwedAndUnrealizedPnl(wlt.address)).unrealizedPnl
 
@@ -475,8 +475,6 @@ async putWrongSideToSleep() : Promise<Result<boolean>> {
 async oneSidedMarketSwitch() :Promise<boolean> {
     // true only if mkt switch from null to one sided OR sides flipped e.g from rally to bear
     let check = false
-    if (this.holosSide && (this.prevHolsSide != this.holosSide) ) 
-    {
         // find minimum number of long/short mkts to meet qurom. 
         // REFACTOR. hardcoded qurome to 2/3
         let btokCount = Object.keys(this.marketMap).length/2
@@ -496,19 +494,28 @@ async oneSidedMarketSwitch() :Promise<boolean> {
         //Lets find the biggest losser
         let lgangScore = longBigLosers.length
         let sgangScore = shortBigLosers.length 
+        // infer which animal is likely to be roaming
+        let currInferance = undefined
         if (lgangScore >= minQrmCount && sgangScore < minQrmCount) {
-            this.prevHolsSide = this.holosSide //save before overwrite
-            this.holosSide = BEAR
+            currInferance = BEAR
         }
         else if (sgangScore >= minQrmCount && lgangScore < minQrmCount) {
-            this.prevHolsSide = this.holosSide 
-            this.holosSide = BULL
+            currInferance = BULL
         }
-        check = true
-        let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
-        console.log(tstmp + ": RegimeSwitch:" + this.holosSide)
-    }
-    return check
+        else { // we have a zebra
+            currInferance = null
+        }
+
+        // did the env change to a diff non-zebra. ie nothing to do if zbra
+        if (!currInferance && (currInferance != this.holosSide )){
+            check = true
+            this.prevHolsSide = this.holosSide //save before overwrite
+            this.holosSide = currInferance
+            let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
+            console.log(tstmp + ": RegimeSwitch:" + this.holosSide)
+        }
+
+        return check
 }  
 
 async putMktToSleep(mkt: Market) {
@@ -573,6 +580,7 @@ async maxLossTestUpdPeak(mkt: Market): Promise<boolean> {
             if (await this.rollEndTest(market)) {
                 await this.awakeMktAndOrTwin(market)
             }
+        }
  
 /* HIDE        
         //--- Get pnl/free collat

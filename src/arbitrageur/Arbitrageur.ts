@@ -49,7 +49,7 @@ interface Market {
     wallet: Wallet
     side: Side
     name: string
-    active: boolean
+//    active: boolean
     baseToken: string
     poolAddr: string
     minReturn: number
@@ -172,7 +172,7 @@ async dbg_get_uret() {
             
             this.marketMap[marketName] = {
                 name: marketName,
-                active: true,
+//                active: true,
                 wallet: this.ethService.privateKeyToWallet(this.pkMap.get(marketName)!),
                 side: marketName.endsWith("SHORT") ? Side.SHORT : Side.LONG,
                 baseToken: pool.baseAddress,
@@ -322,6 +322,11 @@ async awakeMktAndOrTwin(market: Market): Promise<Result<boolean>> {
     if (this.holosSide == null ){ // open both 
         try {
             await this.open(mkt.wallet,mkt.baseToken,mkt.side,sz)
+            >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+            test for active use this instead
+            (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
+            >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
             this.marketMap[market.name].active = true  // REMOVE ME!!!!!
             await this.open(twin.wallet,mkt.baseToken,mkt.side,sztwin)
             this.marketMap[twin.name].active = true  // REMOVE ME!!!!!

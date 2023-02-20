@@ -12,6 +12,7 @@ import { Service } from "typedi"
 import config from "../configs/config.json"
 require('dotenv').config();
 
+const DBG_run = false 
 // typedefs
 type BaseTokenAddr = string
 type EthersWallet = ethers.Wallet
@@ -46,14 +47,17 @@ function transformValues(map: Map<string, string>,
   // scale down/up. virtual collateral is the 'peak' unrealized collateral
 
 interface Market {
+    
     wallet: Wallet
     side: Side
     name: string
 //    active: boolean
     baseToken: string
+    rollEndLock: boolean
     poolAddr: string
     minReturn: number
     maxReturn: number
+    uret: number  // unrealized return
     minMarginRatio: number
     maxMarginRatio: number
     basisCollateral: number
@@ -181,6 +185,7 @@ async dbg_get_uret() {
                 orderAmount: Big(666),
                 minReturn: market.MIN_RETURN,
                 maxReturn: market.MAX_RETURN,
+                uret: 1,
                 minMarginRatio: market.MIN_MARGIN_RATIO,
                 maxMarginRatio: market.MAX_MARGIN_RATIO,
                 basisCollateral: market.START_COLLATERAL,
@@ -192,6 +197,7 @@ async dbg_get_uret() {
                 maxPnl: 0,
                 notionalBasis: config.TP_START_CAP*market.RESET_LEVERAGE,
                 //TODO.rmv
+                rollEndLock:false,
                 resetNeeded: false,
                 resetSize:0,
                 twin: marketName.endsWith("SHORT") ? marketName.split("_")[0] : marketName + "_SHORT"
@@ -237,6 +243,11 @@ async dbg_get_uret() {
 
     
  // TODO move to butil file
+ //------------------
+ async isActive(leg: Market): Promise<boolean> {
+    let pos = (await this.perpService.getTotalPositionValue(leg.wallet.address, leg.baseToken)).toNumber()
+    return (pos != 0)
+ }
  async open(wlt: ethers.Wallet, btoken: string, side: Side, usdAmount: number ) {
     try {
         await this.openPosition(wlt!, btoken ,side,AmountType.QUOTE,Big(usdAmount),undefined,undefined,undefined)
@@ -251,7 +262,7 @@ async dbg_get_uret() {
 
  // close sort of dtor. do all bookeeping and cleanup here
  //REFACTOR: this.close(mkt) will make it easier for functinal styling
-  async close(mkt: Market) {
+async close(mkt: Market) {
     try {
         await this.closePosition(mkt.wallet, mkt.baseToken, undefined,undefined,undefined)
         //bookeeping: upd startCollateral to settled and save old one in basisCollateral
@@ -294,6 +305,14 @@ async rollEndTest(market: Market): Promise<boolean> {
     let check = false
     let mkt = this.marketMap[market.name]
     let twin = this.marketMap[market.twin]
+    // lock to prevent multiple restarts
+    
+    if (market.rollEndLock || twin.rollEndLock) {
+        return check; // exit if already running
+    }
+    market.rollEndLock = true;
+    twin.rollEndLock = true;
+ 
     // dont rely on active. probably should remove pay the price for a single read in lieu of gas wasted and complexity
     let pos = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
     let twinpos = (await this.perpService.getTotalPositionValue(twin.wallet.address, mkt.baseToken)).toNumber()
@@ -308,10 +327,11 @@ async rollEndTest(market: Market): Promise<boolean> {
 }
 
 //----------------------------------
+// trigger: roll ended
 // if sideless open both sides (twins). else only the favored side of the twins
 // ASSERT this.leg and twin have no position
 
-async awakeMktAndOrTwin(market: Market): Promise<Result<boolean>> { 
+async awakeLegAndOrTwin(market: Market): Promise<Result<boolean>> { 
     let check = false
     let leg = this.marketMap[market.name]
     let twin = this.marketMap[market.twin]
@@ -323,13 +343,13 @@ async awakeMktAndOrTwin(market: Market): Promise<Result<boolean>> {
     let posv = (await this.perpService.getTotalPositionValue(leg.wallet.address, leg.baseToken)).toNumber()
     let twinposv = (await this.perpService.getTotalPositionValue(twin.wallet.address, leg.baseToken)).toNumber()    
 
-    if (this.holosSide == null ){ // open both 
+    if (this.holosSide == null ){ // open both. double check not open already!
         try {
-            if(posv) {
+            if(!posv) {
                 await this.open(leg.wallet,leg.baseToken,leg.side,sz)
             }
-            if(twinposv) {
-                await this.open(twin.wallet,leg.baseToken,leg.side,sztwin)
+            if(!twinposv) {
+                await this.open(twin.wallet,twin.baseToken,twin.side,sztwin)
             }
             check = true
         }
@@ -344,14 +364,18 @@ async awakeMktAndOrTwin(market: Market): Promise<Result<boolean>> {
         try {
             // dbl check 
             let posv = (await this.perpService.getTotalPositionValue(favored.wallet.address, leg.baseToken)).toNumber()
-            await this.open(favored.wallet,leg.baseToken,favored.side,szfav)
+            if(!posv) {
+                await this.open(favored.wallet,favored.baseToken,favored.side,szfav)
+            }
             check = true
         }
         catch(err) {
             console.error("OPEN FAILED in awakeMktAndOrTwin")
         }
     }
-
+    // release lock for this mkt
+    market.rollEndLock = false
+    twin.rollEndLock = false
     return { positive: check}
 }
 //----------------------------------------------------------------------------------------------------------
@@ -435,7 +459,8 @@ async putWrongSideToSleep() : Promise<Result<boolean>> {
     let check = false
     let errStr = ""
     // only the undead can go to sleep
-    let activeMkts = Object.values(this.marketMap).filter(m => m.active == true).map( m => m.name)
+    let activeMkts = Object.values(this.marketMap).filter(async m => (await this.isActive(m) == true))
+    .map( m => m.name)
     // groupby long/short gangs among the actives
     const longShortGang = activeMkts.reduce<{ sgang: string[], lgang: string[] }>
                             ((acc, item) => { item.endsWith("SHORT") ? acc.sgang.push(item) : acc.lgang.push(item);return acc; }, 
@@ -455,7 +480,6 @@ async putWrongSideToSleep() : Promise<Result<boolean>> {
             try {
                 await this.close(this.marketMap[n])
                 // this.close will take care of updating start/basisCollat 
-                this.marketMap[n].active = false // REMOVE ME!!
             }
             catch {
                 errStr += "QRM.Close failed:" + n 
@@ -466,20 +490,17 @@ async putWrongSideToSleep() : Promise<Result<boolean>> {
 }
 
 
-// DESC: Test for Regime Switch. updates this.holos.side accordingly
-// POSITIVE:
-// qrom.close. if crossed threshold send a list of arrest to filter deathrows
-// test positive means is NOT null and turned to one Side
-// positive if there is a HolosRegime change from one of the 3 states null, long, short
+// DESC: flags if regime switch to one sided (bull or bear) really is a Participation signal
+// uret < TP_QRM_MIN_RET. this value SHOULD be higher than TP_MAX_LOSS_RATIO e.g if maxloss is 91 
+// MIN RATIO would be something like 92 
 // regime switch is based on qurom on BOTH active/inactive mkts with a minum number of long/short
 // required e.g for 2/3 then 5 modulus 2*5/3 => 2 for 6  => modulus 2*6/3 = 4
-// criteria to count towards minimum is collateral return is below TP_COLRATIO_MAX which should be 
-// <= TP_MAX_LOSS
+// TODO. should incorporate duration to be sqr adjusted to 200 ticks/15 seq to a TP_DURATION (30 minute?)
 // ASSERT TP_MIN_COL_RATIO > TP_MAX_LOSS
 // Critera for regime switch: collateral/startCollateral == MaxLoss collateral ratio
 // Criterial can be cusotmizez
 
-async oneSidedMarketSwitch() :Promise<boolean> {
+async oneSidedTransitionCheck() :Promise<boolean> {
     // true only if mkt switch from null to one sided OR sides flipped e.g from rally to bear
     let check = false
         // find minimum number of long/short mkts to meet qurom. 
@@ -494,10 +515,10 @@ async oneSidedMarketSwitch() :Promise<boolean> {
         // sidSwitch criteria defined as the side with qrom of big losers i.e lt TP_MIN_COL_RATIO lte TP_MAX_LOSS
         // i.e side is the OPPOSITE of whoever gang has the larger number of BigLosers defined as having worse than TP_MIN_COL_RATIO
         //filter long/short meet criteria. MUST include both active and closed                    
-        let longBigLosers = longShortGrp.longGang.filter
-                ( n => this.marketMap[n].basisCollateral/this.marketMap[n].startCollateral < config.TP_MIN_COL_RATIO )
-        let shortBigLosers = longShortGrp.shortGang.filter
-                ( n => this.marketMap[n].basisCollateral/this.marketMap[n].startCollateral < config.TP_MIN_COL_RATIO ) 
+        let longBigLosers = longShortGrp.longGang.filter( n => this.marketMap[n].uret < config.TP_QRM_MIN_RET )
+        //        ( n => this.marketMap[n].basisCollateral/this.marketMap[n].startCollateral < config.TP_MIN_COL_RATIO )
+        let shortBigLosers = longShortGrp.shortGang.filter( n => this.marketMap[n].uret < config.TP_QRM_MIN_RET )
+        //         ( n => this.marketMap[n].basisCollateral/this.marketMap[n].startCollateral < config.TP_MIN_COL_RATIO ) 
         //Lets find the biggest losser
         let lgangScore = longBigLosers.length
         let sgangScore = shortBigLosers.length 
@@ -512,8 +533,7 @@ async oneSidedMarketSwitch() :Promise<boolean> {
         else { // we have a zebra
             currInferance = null
         }
-
-        // did the env change to a diff non-zebra. ie nothing to do if zbra
+        // did the env change to a diff non-zebra. ie nothing to do if zbra aka lowest participation
         if (!currInferance && (currInferance != this.holosSide )){
             check = true
             this.prevHolsSide = this.holosSide //save before overwrite
@@ -528,13 +548,12 @@ async oneSidedMarketSwitch() :Promise<boolean> {
 async putMktToSleep(mkt: Market) {
     try {
         await this.close(mkt) 
-        this.marketMap[mkt.name].active = false  //REMOVE ME!!!!
+
     }
     catch(err) {
         console.error("Failed closed in putMktToSleep")
     }
     // compute terminal wealth contribution before overwrite
-            //let colZero = mkt.startCollateral 
             // below no longer needed done in dtor/close
             //let scoll = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
             //this.marketMap[mkt.name].startCollateral = scoll
@@ -547,17 +566,18 @@ async putMktToSleep(mkt: Market) {
 }
 
 //----------------------------------------------------------------------------------------------------------
-// OJO: CURRENTLY combining lMit and maxLoss. into tmpMitCheck for w-end urn
+// this check also update state: peak and uret
 // COND-ACT: on TP_MAX_LOSS close leg. When twin MAX_LOSS (pexit) rollStateCheck will restart
 // SIDEff: mkt.startCollatera onClose and also on new peak
 // Error: throws open/close
 // NOTE: when dado is stopped 
 //----------------------------------
 
-async maxLossTestUpdPeak(mkt: Market): Promise<boolean> {
+async legMaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
     // skip if market inactive
     let check = false
-    if (this.marketMap[mkt.name].active) { 
+    let leg = this.marketMap[mkt.name]
+    if (await this.isActive(leg)) { 
         // collatbasis is the peak colateral
         let collatbasis = mkt.basisCollateral
         const col = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
@@ -570,22 +590,24 @@ async maxLossTestUpdPeak(mkt: Market): Promise<boolean> {
         if (col > collatbasis) { 
             mkt.basisCollateral = col 
         }  
+        // update uret used by qrom holos check
+        mkt.uret = uret
         console.log(mkt.name + " cbasis:" + mkt.basisCollateral.toFixed(2) + " uret:" + uret.toFixed(4))
     } 
     return check 
   }
 
     async arbitrage(market: Market) {
-            if ( await this.maxLossTestUpdPeak(market) ) {   // have a positive => close took place. check for qrom crossing
+            if ( await this.legMaxLossCheckAndStateUpd(market) ) {   // have a positive => close took place. check for qrom crossing
                 this.putMktToSleep(market)
             }
             // REFAC regimeSwitchOnCollat(criteria =RatioTest)
-            if (await this.oneSidedMarketSwitch() ) {   // swith from zbra to bull/bear or bull<->bear
+            if (await this.oneSidedTransitionCheck() ) {   // swith from (ZBR to bull/bear OR bull<->bear)
                 await this.putWrongSideToSleep()        // all active lgang or sgang. unless winner among losers
             }
             // ROLL.END.Condition: (!mkt.active &&  !mk.twin.active)
             if (await this.rollEndTest(market)) {
-                await this.awakeMktAndOrTwin(market)
+                await this.awakeLegAndOrTwin(market) //wakeup only favored leg if sided mkt else both
             }
         }
  

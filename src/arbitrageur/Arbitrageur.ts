@@ -308,28 +308,29 @@ async rollEndTest(market: Market): Promise<boolean> {
 }
 
 //----------------------------------
-// if sideless open mkt and twin. else only the favored of the twins
-// ASSERT mkt and twin have no position
+// if sideless open both sides (twins). else only the favored side of the twins
+// ASSERT this.leg and twin have no position
 
 async awakeMktAndOrTwin(market: Market): Promise<Result<boolean>> { 
     let check = false
-    let mkt = this.marketMap[market.name]
+    let leg = this.marketMap[market.name]
     let twin = this.marketMap[market.twin]
 
     let sz = this.marketMap[market.name].startCollateral * this.marketMap[market.name].leverage
     let sztwin = this.marketMap[twin.name].startCollateral * this.marketMap[twin.name].leverage
+       
+    // we should not have any position. but dlbcheck before opening
+    let posv = (await this.perpService.getTotalPositionValue(leg.wallet.address, leg.baseToken)).toNumber()
+    let twinposv = (await this.perpService.getTotalPositionValue(twin.wallet.address, leg.baseToken)).toNumber()    
 
     if (this.holosSide == null ){ // open both 
         try {
-            await this.open(mkt.wallet,mkt.baseToken,mkt.side,sz)
-            >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-            test for active use this instead
-            (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
-            >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-
-            this.marketMap[market.name].active = true  // REMOVE ME!!!!!
-            await this.open(twin.wallet,mkt.baseToken,mkt.side,sztwin)
-            this.marketMap[twin.name].active = true  // REMOVE ME!!!!!
+            if(posv) {
+                await this.open(leg.wallet,leg.baseToken,leg.side,sz)
+            }
+            if(twinposv) {
+                await this.open(twin.wallet,leg.baseToken,leg.side,sztwin)
+            }
             check = true
         }
         catch(err) {
@@ -337,12 +338,13 @@ async awakeMktAndOrTwin(market: Market): Promise<Result<boolean>> {
         }
     }
     else {  // sided market
-        let favored = (this.holosSide == mkt.side) ? mkt : twin
+        let favored = (this.holosSide == leg.side) ? leg : twin
         let szfav = favored.startCollateral * favored.leverage
 
         try {
-            await this.open(favored.wallet,mkt.baseToken,favored.side,szfav)
-            this.marketMap[market.name].active = true  // REMOVE ME!!!!!
+            // dbl check 
+            let posv = (await this.perpService.getTotalPositionValue(favored.wallet.address, leg.baseToken)).toNumber()
+            await this.open(favored.wallet,leg.baseToken,favored.side,szfav)
             check = true
         }
         catch(err) {

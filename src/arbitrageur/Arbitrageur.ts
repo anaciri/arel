@@ -308,14 +308,16 @@ async rollEndTest(market: Market): Promise<boolean> {
     // lock to prevent multiple restarts
     
     if (market.rollEndLock || twin.rollEndLock) {
+        console.log("rollEnd already running. exiting")
         return check; // exit if already running
     }
     market.rollEndLock = true;
     twin.rollEndLock = true;
+    console.log("RollEndLocked")
  
     // dont rely on active. probably should remove pay the price for a single read in lieu of gas wasted and complexity
     let pos = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
-    let twinpos = (await this.perpService.getTotalPositionValue(twin.wallet.address, mkt.baseToken)).toNumber()
+    let twinpos = (await this.perpService.getTotalPositionValue(twin.wallet.address, twin.baseToken)).toNumber()
 
     if (!pos && !twinpos ) {
         let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
@@ -331,52 +333,80 @@ async rollEndTest(market: Market): Promise<boolean> {
 // if sideless open both sides (twins). else only the favored side of the twins
 // ASSERT this.leg and twin have no position
 
-async awakeLegAndOrTwin(market: Market): Promise<Result<boolean>> { 
-    let check = false
-    let leg = this.marketMap[market.name]
-    let twin = this.marketMap[market.twin]
+async rollEndCheck(market: Market): Promise<boolean> { 
+// check first if this check running for this mkt
+let check = false
+let leg = this.marketMap[market.name]
+let twin = this.marketMap[market.twin]
 
-    let sz = this.marketMap[market.name].startCollateral * this.marketMap[market.name].leverage
-    let sztwin = this.marketMap[twin.name].startCollateral * this.marketMap[twin.name].leverage
+if (leg.rollEndLock || twin.rollEndLock) {
+    console.log("rollEnd already running. exiting")
+    return false; // exit if already running
+}
+
+// first run. lock
+leg.rollEndLock = true;
+twin.rollEndLock = true;
+console.log("RollEndLocked")
+
+// dont rely on active. probably should remove pay the price for a single read in lieu of gas wasted and complexity
+let pos = (await this.perpService.getTotalPositionValue(leg.wallet.address, leg.baseToken)).toNumber()
+let twinpos = (await this.perpService.getTotalPositionValue(twin.wallet.address, twin.baseToken)).toNumber()
+
+// if both are not closed. nothing to do 
+if (pos || twinpos ) {
+    // roll did not end. unlock and then exit
+    leg.rollEndLock = false;
+    twin.rollEndLock = false;
+    return false
+}
+// OK. both legs ended
+let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
+// note. onClose startCollateral has the settled collateral after close settled
+console.log(tstmp + ": ROLL.END[" + market.name + "] leg-twin col: " + leg.startCollateral + "'" + twin.startCollateral)
+
+// Decide if one or two legs need to be opened
+
+    let sz = leg.startCollateral * leg.leverage
+    let sztwin = twin.startCollateral * twin.leverage
        
     // we should not have any position. but dlbcheck before opening
-    let posv = (await this.perpService.getTotalPositionValue(leg.wallet.address, leg.baseToken)).toNumber()
-    let twinposv = (await this.perpService.getTotalPositionValue(twin.wallet.address, leg.baseToken)).toNumber()    
-
-    if (this.holosSide == null ){ // open both. double check not open already!
-        try {
-            if(!posv) {
-                await this.open(leg.wallet,leg.baseToken,leg.side,sz)
+    //let posv = (await this.perpService.getTotalPositionValue(leg.wallet.address, leg.baseToken)).toNumber()
+    //let twinposv = (await this.perpService.getTotalPositionValue(twin.wallet.address, leg.baseToken)).toNumber()    
+    
+    // ZBR open both
+    console.log("INFO: Holos: " + this.holosSide)
+    try {
+        if (this.holosSide == null ){ // open both. double check not open already!
+            if(!pos) {
+            await this.open(leg.wallet,leg.baseToken,leg.side,sz)
             }
-            if(!twinposv) {
-                await this.open(twin.wallet,twin.baseToken,twin.side,sztwin)
-            }
-            check = true
+            if(!twinpos) {
+            await this.open(twin.wallet,twin.baseToken,twin.side,sztwin)
         }
-        catch(err) {
-            console.error("OPEN FAILED in awakeMktAndOrTwin")
+        check = true
         }
-    }
-    else {  // sided market
-        let favored = (this.holosSide == leg.side) ? leg : twin
-        let szfav = favored.startCollateral * favored.leverage
-
-        try {
-            // dbl check 
+        else {  // sided market
+            let favored = (this.holosSide == leg.side) ? leg : twin
+            let szfav = favored.startCollateral * favored.leverage
+            // dbl check not open
             let posv = (await this.perpService.getTotalPositionValue(favored.wallet.address, leg.baseToken)).toNumber()
             if(!posv) {
                 await this.open(favored.wallet,favored.baseToken,favored.side,szfav)
             }
-            check = true
-        }
-        catch(err) {
-            console.error("OPEN FAILED in awakeMktAndOrTwin")
+        check = true
         }
     }
+    catch(err) {
+        console.error("OPEN FAILED in awakeMktAndOrTwin")
+    }
+    finally {
     // release lock for this mkt
-    market.rollEndLock = false
+    leg.rollEndLock = false
     twin.rollEndLock = false
-    return { positive: check}
+    }
+    console.log("UnlockRollEndCheck")
+    return  check
 }
 //----------------------------------------------------------------------------------------------------------
 // DESC: if both dados are stopped then is end of roll and rethrow both dados
@@ -539,7 +569,7 @@ async oneSidedTransitionCheck() :Promise<boolean> {
             this.prevHolsSide = this.holosSide //save before overwrite
             this.holosSide = currInferance
             let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
-            console.log(tstmp + ": RegimeSwitch:" + this.holosSide)
+            console.log(tstmp + ": INFO: RegimeSwitch:" + this.holosSide)
         }
 
         return check
@@ -560,9 +590,9 @@ async putMktToSleep(mkt: Market) {
             // note: this.close takes care of updating collat values
             let oldStartCol = mkt.basisCollateral
             let settledCol = mkt.startCollateral //updated in this.close
-            let ret = 1 + (settledCol-oldStartCol/oldStartCol)
+            let ret = 1 + (settledCol-oldStartCol)/oldStartCol
             let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
-    console.log(tstmp + ": ROLL.Dado[ " + mkt.name + " ] END, stldcoll: " + settledCol + "ret: " + ret)
+    console.log(tstmp + ": INFO: Kill " + mkt.name + ", stldcoll: " + settledCol + " rret: " + ret)
 }
 
 //----------------------------------------------------------------------------------------------------------
@@ -606,9 +636,8 @@ async legMaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
                 await this.putWrongSideToSleep()        // all active lgang or sgang. unless winner among losers
             }
             // ROLL.END.Condition: (!mkt.active &&  !mk.twin.active)
-            if (await this.rollEndTest(market)) {
-                await this.awakeLegAndOrTwin(market) //wakeup only favored leg if sided mkt else both
-            }
+            //if (await this.rollEndTest(market)) {
+            await this.rollEndCheck(market) //wakeup only favored leg if sided mkt else both
         }
  
 /* HIDE        

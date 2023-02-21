@@ -308,12 +308,12 @@ async rollEndTest(market: Market): Promise<boolean> {
     // lock to prevent multiple restarts
     
     if (market.rollEndLock || twin.rollEndLock) {
-        console.log("rollEnd already running. exiting")
+        //console.log("rollEnd already running. exiting")
         return check; // exit if already running
     }
     market.rollEndLock = true;
     twin.rollEndLock = true;
-    console.log("RollEndLocked")
+    //console.log("RollEndLocked")
  
     // dont rely on active. probably should remove pay the price for a single read in lieu of gas wasted and complexity
     let pos = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
@@ -340,14 +340,14 @@ let leg = this.marketMap[market.name]
 let twin = this.marketMap[market.twin]
 
 if (leg.rollEndLock || twin.rollEndLock) {
-    console.log("rollEnd already running. exiting")
+    //console.log("rollEnd already running. exiting")
     return false; // exit if already running
 }
 
 // first run. lock
 leg.rollEndLock = true;
 twin.rollEndLock = true;
-console.log("RollEndLocked")
+//console.log("RollEndLocked")
 
 // dont rely on active. probably should remove pay the price for a single read in lieu of gas wasted and complexity
 let pos = (await this.perpService.getTotalPositionValue(leg.wallet.address, leg.baseToken)).toNumber()
@@ -404,6 +404,7 @@ console.log(tstmp + ": ROLL.END[" + market.name + "] leg-twin col: " + leg.start
     // release lock for this mkt
     leg.rollEndLock = false
     twin.rollEndLock = false
+    console.log("EndRoll lock release")
     }
     console.log("UnlockRollEndCheck")
     return  check

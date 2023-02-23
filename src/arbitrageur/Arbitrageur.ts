@@ -262,12 +262,13 @@ async dbg_get_uret() {
 
  // close sort of dtor. do all bookeeping and cleanup here
  //REFACTOR: this.close(mkt) will make it easier for functinal styling
+ // onClose startCollateral == basisCollateral == settledCollatOnClose
 async close(mkt: Market) {
     try {
         await this.closePosition(mkt.wallet, mkt.baseToken, undefined,undefined,undefined)
         //bookeeping: upd startCollateral to settled and save old one in basisCollateral
         let scoll = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
-        mkt.basisCollateral = mkt.startCollateral
+        mkt.basisCollateral = scoll
         mkt.startCollateral = scoll
         }
     catch (e: any) {
@@ -320,9 +321,9 @@ async rollEndTest(market: Market): Promise<boolean> {
     let twinpos = (await this.perpService.getTotalPositionValue(twin.wallet.address, twin.baseToken)).toNumber()
 
     if (!pos && !twinpos ) {
-        let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
+        let tstmp = new Date().toLocaleTimeString([], {hour12: false});
         // note. onClose startCollateral has the settled collateral after close settled
-        console.log(tstmp + ": ROLL.END[" + market.name + "] Coll: " + mkt.startCollateral + "'" + twin.startCollateral)
+        console.log(tstmp + ": INFO: ROLL.END[" + market.name + "] Coll: " + mkt.startCollateral + ", " + twin.startCollateral)
         check = true
     }
     return check
@@ -361,9 +362,9 @@ if (pos || twinpos ) {
     return false
 }
 // OK. both legs ended
-let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
+let tstmp = new Date().toLocaleTimeString([], {hour12: false});
 // note. onClose startCollateral has the settled collateral after close settled
-console.log(tstmp + ": ROLL.END[" + market.name + "] leg-twin col: " + leg.startCollateral + "'" + twin.startCollateral)
+console.log(tstmp + ": INFO ROLL.END[" + market.name + "] leg-twin col: " + leg.startCollateral + ", " + twin.startCollateral)
 
 // Decide if one or two legs need to be opened
 
@@ -569,7 +570,7 @@ async oneSidedTransitionCheck() :Promise<boolean> {
             check = true
             this.prevHolsSide = this.holosSide //save before overwrite
             this.holosSide = currInferance
-            let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
+            let tstmp = new Date().toLocaleTimeString([], {hour12: false});
             console.log(tstmp + ": INFO: RegimeSwitch:" + this.holosSide)
         }
 
@@ -593,7 +594,7 @@ async putMktToSleep(mkt: Market) {
             let settledCol = mkt.startCollateral //updated in this.close
             let ret = 1 + (settledCol-oldStartCol)/oldStartCol
             let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
-    console.log(tstmp + ": INFO: Kill " + mkt.name + ", stldcoll: " + settledCol + " rret: " + ret)
+    console.log(tstmp + ": INFO: Kill " + mkt.name + ", stldcoll: " + settledCol.toFixed(4) + " rret: " + ret.toFixed(2))
 }
 
 //----------------------------------------------------------------------------------------------------------

@@ -5,9 +5,11 @@ import { Log } from "@perp/common/build/lib/loggers"
 import { BotService } from "@perp/common/build/lib/perp/BotService"
 import { AmountType, Side } from "@perp/common/build/lib/perp/PerpService"
 import { CollateralManager, IClearingHouse } from "@perp/common/build/types/curie"
+import { UniswapV3Pool } from "@perp/common/build/types/ethers-uniswap"
 import Big from "big.js"
 import { ethers } from "ethers"
 import { max, padEnd, update } from "lodash"
+import { decode } from "punycode"
 import { Service } from "typedi"
 import config from "../configs/config.json"
 //import { IUniswapV3PoolEvents } from "@perp/IUniswapV3PoolEvents";
@@ -29,6 +31,18 @@ const TP_MIN_MR    = 0.12  // 8.33x
 const TP_MR_DEC_SZ = 0.02
 const TP_MAX_MR    = 0.50 
 const TP_MR_INC_SZ = 0.02  // OJO you INC onStopLoss 5x
+
+//decode function
+function decodeEvt(unipool: UniswapV3Pool ,eventdata: any) {
+    // should i use IUniswapV3PoolEvents and eventdata: ethers.Event?
+    let evetdata = "0xBd7a3B7DbEb096F0B832Cf467B94b091f30C34ec"
+    const decodedEventData = unipool.interface.decodeEventLog('Swap', eventdata);
+          // Get the token addresses and tick of the event
+            const token0Address = decodedEventData.token0;
+            const token1Address = decodedEventData.token1;
+            const tick = decodedEventData.tick;
+            console.log("token0Address: ", token0Address);
+}
 
 interface Result<T> {
     error?: Error;
@@ -111,22 +125,28 @@ export class Arbitrageur extends BotService {
         // needed by BotService.retrySendTx
         await this.createNonceMutex([...wlts.values()])
         
-        // setup pool listiners
         this.setupPoolListeners()
         //todo
         //await this.createMarketMap()
         
     }
     // setup listeners for all pools
+    // test event: 0xBd7a3B7DbEb096F0B832Cf467B94b091f30C34ec
     async setupPoolListeners(): Promise<void> {
         const poolMap: { [keys: string]: any } = {}
         for (const p of this.perpService.metadata.pools) {
             poolMap[p.baseSymbol] = p
         
             const unipool = await this.perpService.createPool(p.address);
-            unipool.on('Swap', (event: ethers.Event) => {
-                console.log(`Swap event: ${JSON.stringify(event)}`);
-                });
+            unipool.on('Swap', (sender: string, amount0In: number, amount1In: number, amount0Out: number, amount1Out: number, to: string, event: ethers.Event) => {
+                console.log(`Swap event data: ${JSON.stringify(event.args)}`);
+            });
+
+            /*unipool.on('Swap', (event: ethers.Event) => {
+                const rawEventData = event.data;
+                console.log(event)
+                console.log(rawEventData)
+                });*/
             }
     }
 

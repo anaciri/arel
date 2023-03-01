@@ -132,16 +132,31 @@ export class Arbitrageur extends BotService {
     }
     // setup listeners for all pools
     // test event: 0xBd7a3B7DbEb096F0B832Cf467B94b091f30C34ec
-    async setupPoolListeners(): Promise<void> {
-        const poolMap: { [keys: string]: any } = {}
-        for (const p of this.perpService.metadata.pools) {
-            poolMap[p.baseSymbol] = p
-        
-            const unipool = await this.perpService.createPool(p.address);
-            unipool.on('Swap', (sender: string, amount0In: number, amount1In: number, amount0Out: number, amount1Out: number, to: string, event: ethers.Event) => {
-                console.log(`Swap event data: ${JSON.stringify(event.args)}`);
-            });
+    // IUniswapV3PoolEvents.events.Swap:
+    /// @param sender The address that initiated the swap call, and that received the callback
+    /// @param recipient The address that received the output of the swap
+    /// @param amount0 The delta of the token0 balance of the pool
+    /// @param amount1 The delta of the token1 balance of the pool
+    /// @param sqrtPriceX96 The sqrt(price) of the pool after the swap, as a Q64.96
+    /// @param liquidity The liquidity of the pool after the swap
+    /// @param tick The log base 1.0001 of price of the pool after the swap
 
+    async setupPoolListeners(): Promise<void> {
+        const poolStateMap: { [keys: string]: any } = {}
+        for (const p of this.perpService.metadata.pools) {
+            poolStateMap[p.baseSymbol] = p
+            // save event data in stateMap[p.baseSymbol] as listener gets the event data
+
+            const unipool = await this.perpService.createPool(p.address);
+            unipool.on('Swap', (sender: string, recipient: string, amount0: Big, amount1: Big, sqrtPriceX96: Big, liquidity: Big, tick: number, event: ethers.Event) => {
+                poolStateMap[p.baseSymbol].tick= tick
+                poolStateMap[p.baseSymbol].sqrtPriceX96 = sqrtPriceX96
+                //const deltaTick = poolStateMap[p.baseSymbol].prevTick - poolStateMap[p.baseSymbol].tick
+                const deltaTick = null
+                console.log( p.baseSymbol, poolStateMap[p.baseSymbol].tick.toFixed(), deltaTick, poolStateMap[p.baseSymbol].sqrtPriceX96.toNumber())
+                console.log(`Swap event data: sender=${sender} recipient=${recipient} amount0=${amount0.toFixed()} amount1=${amount1.toFixed()} sqrtPriceX96=${sqrtPriceX96.toFixed()} liquidity=${liquidity.toFixed()} tick=${tick}`);
+              });
+        
             /*unipool.on('Swap', (event: ethers.Event) => {
                 const rawEventData = event.data;
                 console.log(event)

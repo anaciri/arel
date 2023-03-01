@@ -10,6 +10,8 @@ import { ethers } from "ethers"
 import { max, padEnd, update } from "lodash"
 import { Service } from "typedi"
 import config from "../configs/config.json"
+//import { IUniswapV3PoolEvents } from "@perp/IUniswapV3PoolEvents";
+
 require('dotenv').config();
 
 const DBG_run = false 
@@ -93,52 +95,9 @@ export class Arbitrageur extends BotService {
     private prevHolsSide: Side | null = null
     //private closedHolos: string[] = []
 
-//----------------------------------------------------------------------------------------
-// DBG/ manual
-// block: 888, vPERP
-//----------------------------------------------------------------------------------------
-async dbg_openclose() {
-    let mkt = 'vPERP'
-    let btoken = "0x9482AaFdCed6b899626f465e1FA0Cf1B1418d797"
-    let side = Side.SHORT
-    let usdAmount = 50
-
-    let wlt = this.ethService.privateKeyToWallet(this.pkMap.get(mkt)!)
-    try {
-        await this.openPosition(wlt!, btoken ,side,AmountType.QUOTE,Big(usdAmount),undefined,undefined,undefined)
-    }
-    catch (e: any) {
-        console.error(`ERROR: FAILED OPEN. Rotating endpoint: ${e.toString()}`)
-    }
-}
-
-async dbg_get_uret() {
-    // OJO. dont wast time testing what u know already works. closing and reopening
-    // works that is not changing only logi to compute ure. the other changes
-    // initialize initialCollatera are trivial
-    let mkt = 'vPERP'
-    let perpBaseToken = "0x9482AaFdCed6b899626f465e1FA0Cf1B1418d797"
-    let wlt = this.ethService.privateKeyToWallet(this.pkMap.get(mkt)!)
-    let test =  await this.perpService.getTotalPositionSize(wlt.address, perpBaseToken)
-    let vault = await this.perpService.createVault()
-
-    const initalCollateral = this.marketMap[mkt].startCollateral
-    const currCollateral = (await vault.getBalanceByToken(wlt.address, OP_USDC_ADDR)) / 10**6
-    const upnl =  (await this.perpService.getOwedAndUnrealizedPnl(wlt.address)).unrealizedPnl
-
-    //check return value makes sense
-    let uret = 1 + (currCollateral + upnl.toNumber() - initalCollateral)/initalCollateral
-    
-     //regardless if stoploss or scale, need to 1.close and 2.open 
-     // that is not changing. no need to retest  
-    console.log(uret)
-}
 
     async setup(): Promise<void> {
-        this.log.jinfo({
-            event: "SetupNoLo",
-        })
-        //note. ignore entry on provider url. using vSYMB[_SHORT]
+        this.log.jinfo({ event: "Setup",})
        // Print the names and values of all the variables that match the pattern 'v[A-Z]{3,}'
         const pattern = /^v[A-Z]{3,}/  
         let vk = Object.entries(process.env).filter(([k])=> pattern.test(k))
@@ -148,19 +107,27 @@ async dbg_get_uret() {
           }
           
         // initilize pkMap
-        //let wlts = this.pkMap.forEach((v,k) => this.ethService.privateKeyToWallet(v))
           let wlts = transformValues(this.pkMap, v => this.ethService.privateKeyToWallet(v))
         // needed by BotService.retrySendTx
         await this.createNonceMutex([...wlts.values()])
-        await this.createMarketMap()
-
-        /*this.log.jinfo({
-            event: "Arbitrageur",
-            params: {
-                address: this.wallet.address,
-                //TODO.STK display nextnonce for all walets: nextNonce: this.addrNonceMutexMap[this.walletMap[].address].nextNonce,
-                //nextNonce: this.addrNonceMutexMap[this.wallet.address].nextNonce,
-             }, })*/
+        
+        // setup pool listiners
+        this.setupPoolListeners()
+        //todo
+        //await this.createMarketMap()
+        
+    }
+    // setup listeners for all pools
+    async setupPoolListeners(): Promise<void> {
+        const poolMap: { [keys: string]: any } = {}
+        for (const p of this.perpService.metadata.pools) {
+            poolMap[p.baseSymbol] = p
+        
+            const unipool = await this.perpService.createPool(p.address);
+            unipool.on('Swap', (event: ethers.Event) => {
+                console.log(`Swap event: ${JSON.stringify(event)}`);
+                });
+            }
     }
 
    async createMarketMap() {
@@ -207,20 +174,7 @@ async dbg_get_uret() {
 
     async start(): Promise<void> {
         this.ethService.enableEndpointRotation()
-        //const balance = await this.perpService.getUSDCBalance(this.wallet.address)
-        //this.log.jinfo({ event: "CheckUSDCBalance", params: { balance: +balance } })
-        /*
-        if (balance.gt(0)) {
-            await this.approve(this.wallet, balance)
-            await this.deposit(this.wallet, balance)
-        }
-        */
-       // OJO. BOOKMARK. after done testin. COMMENT out AND uncomment this.arbitrageRoutine()
-        //this.dbg_get_uret()
-        // UNCOMMENT ME ABOVE to debug
-        // WAIT FOR setup to finish
-
-        this.arbitrageRoutine()
+        //this.arbitrageRoutine()
     }
 
 
@@ -244,10 +198,14 @@ async dbg_get_uret() {
     
  // TODO move to butil file
  //------------------
+
+
  async isActive(leg: Market): Promise<boolean> {
     let pos = (await this.perpService.getTotalPositionValue(leg.wallet.address, leg.baseToken)).toNumber()
     return (pos != 0)
  }
+
+
  async open(wlt: ethers.Wallet, btoken: string, side: Side, usdAmount: number ) {
     try {
         await this.openPosition(wlt!, btoken ,side,AmountType.QUOTE,Big(usdAmount),undefined,undefined,undefined)

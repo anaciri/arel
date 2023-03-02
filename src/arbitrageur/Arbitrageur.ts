@@ -6,6 +6,7 @@ import { BotService } from "@perp/common/build/lib/perp/BotService"
 import { AmountType, Side } from "@perp/common/build/lib/perp/PerpService"
 import { CollateralManager, IClearingHouse } from "@perp/common/build/types/curie"
 import { UniswapV3Pool } from "@perp/common/build/types/ethers-uniswap"
+import BigNumber from 'bignumber.js';
 import Big from "big.js"
 import { ethers } from "ethers"
 import { max, padEnd, update } from "lodash"
@@ -60,10 +61,15 @@ function transformValues(map: Map<string, string>,
     return result;
   }
   // NOTE: START_COLLATERAL, collateral and peakcollateral: collat is the 'real collat' init to START_COLLATERAL and update on
-  // scale down/up. virtual collateral is the 'peak' unrealized collateral
+  
+interface PoolState {
+    poolAddr: string,
+    tick: number | undefined,
+    prevTick: number | undefined,
+    //sqrtPriceX96: number, // 96 bits of precision. needed??
+}  
 
 interface Market {
-    
     wallet: Wallet
     side: Side
     name: string
@@ -107,6 +113,8 @@ export class Arbitrageur extends BotService {
     private readonly arbitrageMaxGasFeeEth = Big(config.ARBITRAGE_MAX_GAS_FEE_ETH)
     private holosSide: Side | null = null
     private prevHolsSide: Side | null = null
+    private poolStateMap: { [keys: string]: PoolState } = {}
+
     //private closedHolos: string[] = []
 
 
@@ -125,6 +133,7 @@ export class Arbitrageur extends BotService {
         // needed by BotService.retrySendTx
         await this.createNonceMutex([...wlts.values()])
         
+        this.createPoolStateMap()
         this.setupPoolListeners()
         //todo
         //await this.createMarketMap()
@@ -142,19 +151,20 @@ export class Arbitrageur extends BotService {
     /// @param tick The log base 1.0001 of price of the pool after the swap
 
     async setupPoolListeners(): Promise<void> {
-        const poolStateMap: { [keys: string]: any } = {}
-        for (const p of this.perpService.metadata.pools) {
-            poolStateMap[p.baseSymbol] = p
-            // save event data in stateMap[p.baseSymbol] as listener gets the event data
+        //for (const p of this.perpService.metadata.pools) {
+        for (const symb in this.poolStateMap) {
 
-            const unipool = await this.perpService.createPool(p.address);
+            const unipool = await this.perpService.createPool(this.poolStateMap[symb].poolAddr);
+            // setup Swap event handler
             unipool.on('Swap', (sender: string, recipient: string, amount0: Big, amount1: Big, sqrtPriceX96: Big, liquidity: Big, tick: number, event: ethers.Event) => {
-                poolStateMap[p.baseSymbol].tick= tick
-                poolStateMap[p.baseSymbol].sqrtPriceX96 = sqrtPriceX96
-                //const deltaTick = poolStateMap[p.baseSymbol].prevTick - poolStateMap[p.baseSymbol].tick
-                const deltaTick = null
-                console.log( p.baseSymbol, poolStateMap[p.baseSymbol].tick.toFixed(), deltaTick, poolStateMap[p.baseSymbol].sqrtPriceX96.toNumber())
-                console.log(`Swap event data: sender=${sender} recipient=${recipient} amount0=${amount0.toFixed()} amount1=${amount1.toFixed()} sqrtPriceX96=${sqrtPriceX96.toFixed()} liquidity=${liquidity.toFixed()} tick=${tick}`);
+                this.poolStateMap[symb].tick= tick
+                const deltaTick = this.poolStateMap[symb].tick! - this.poolStateMap[symb].prevTick!
+                this.poolStateMap[symb].prevTick = tick
+                // convert ticks to price: price = 1.0001 ** tick
+                let price = 1.0001 ** tick
+
+                const epoch: number = Math.floor(Date.now() / 1000);
+                console.log( epoch.toString(), symb, this.poolStateMap[symb].tick, deltaTick, price)
               });
         
             /*unipool.on('Swap', (event: ethers.Event) => {
@@ -164,6 +174,17 @@ export class Arbitrageur extends BotService {
                 });*/
             }
     }
+
+    async createPoolStateMap() {
+        for (const pool of this.perpService.metadata.pools) {
+            this.poolStateMap[pool.baseSymbol] = { 
+                poolAddr: pool.address,
+                prevTick: 0,
+                tick: undefined
+              };
+        }
+    }
+
 
    async createMarketMap() {
         const poolMap: { [keys: string]: any } = {}

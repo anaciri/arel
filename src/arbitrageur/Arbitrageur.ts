@@ -158,13 +158,14 @@ export class Arbitrageur extends BotService {
             // setup Swap event handler
             unipool.on('Swap', (sender: string, recipient: string, amount0: Big, amount1: Big, sqrtPriceX96: Big, liquidity: Big, tick: number, event: ethers.Event) => {
                 this.poolStateMap[symb].tick= tick
-                const deltaTick = this.poolStateMap[symb].tick! - this.poolStateMap[symb].prevTick!
+                //const deltaTick = this.poolStateMap[symb].tick! - this.poolStateMap[symb].prevTick!
+                const prevTick = this.poolStateMap[symb].prevTick
                 this.poolStateMap[symb].prevTick = tick
                 // convert ticks to price: price = 1.0001 ** tick
                 let price = 1.0001 ** tick
 
-                const epoch: number = Math.floor(Date.now() / 1000);
-                console.log( epoch.toString(), symb, this.poolStateMap[symb].tick, deltaTick, price)
+                const epoch = Math.floor(Date.now() / 1000).toString();
+                console.log(`${epoch}, ${symb}, ${prevTick}, ${this.poolStateMap[symb].tick}, ${price.toFixed(4)}`);
               });
         
             /*unipool.on('Swap', (event: ethers.Event) => {

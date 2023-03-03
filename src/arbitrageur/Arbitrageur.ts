@@ -74,6 +74,7 @@ interface Market {
     wallet: Wallet
     side: Side
     name: string
+    tkr: string
 //    active: boolean
     baseToken: string
     rollEndLock: boolean
@@ -199,7 +200,7 @@ export class Arbitrageur extends BotService {
             
             this.marketMap[marketName] = {
                 name: marketName,
-//                active: true,
+                tkr:marketName.split('_')[0],
                 wallet: this.ethService.privateKeyToWallet(this.pkMap.get(marketName)!),
                 side: marketName.endsWith("SHORT") ? Side.SHORT : Side.LONG,
                 baseToken: pool.baseAddress,
@@ -349,13 +350,13 @@ async rollEndTest(market: Market): Promise<boolean> {
 //-----
 async wakeUpCheck(mkt: Market): Promise<boolean> { 
     // get the tick delta for this market 
-    let btok = mkt.name.split("-")[0]
-    let pool = this.poolStateMap[btok]
+    let tkr = mkt.name.split("-")[0]
+    let pool = this.poolStateMap[tkr]
 
-    // if tick undefined print error
+    /* if tick undefined print error
     if (typeof pool.tick === "undefined" || typeof pool.prevTick === "undefined") {
         console.error("ERROR: tick undefined for " + btok);
-    }
+    }*/
     
 
     // if prevTick is zero, then this is the first time we are checking
@@ -689,7 +690,7 @@ async legMaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
         console.log(mkt.name + " cbasis:" + mkt.basisCollateral.toFixed(2) + " uret:" + uret.toFixed(4))
     } 
     //dump ticks output for display
-    let dltatick = this.poolStateMap[mkt.name].tick! - this.poolStateMap[mkt.name].prevTick!
+    let dltatick = this.poolStateMap[mkt.tkr].tick! - this.poolStateMap[mkt.tkr].prevTick!
     if (dltatick != 0) {
         console.log(mkt.name + " dtks:" + dltatick ) 
     }

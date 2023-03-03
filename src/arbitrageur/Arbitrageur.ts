@@ -24,6 +24,12 @@ type BaseTokenAddr = string
 type EthersWallet = ethers.Wallet
 type closeFuncType = (arg1: EthersWallet, arg2: BaseTokenAddr) => Promise<void>
 
+enum Direction {
+    ZEBRA = "zebra",
+    TORO = "toro",
+    BEAR = "bear"
+}
+
 const BEAR = Side.SHORT
 const BULL = Side.LONG
 //const ZBRA = (Side.NEUTRAL)  //TODO
@@ -350,8 +356,8 @@ async rollEndTest(market: Market): Promise<boolean> {
 //-----
 async wakeUpCheck(mkt: Market): Promise<boolean> { 
     // get the tick delta for this market 
-    let tkr = mkt.name.split("-")[0]
-    let pool = this.poolStateMap[tkr]
+    let tickDelta = 0
+    let pool = this.poolStateMap[mkt.tkr]
 
     /* if tick undefined print error
     if (typeof pool.tick === "undefined" || typeof pool.prevTick === "undefined") {
@@ -360,11 +366,15 @@ async wakeUpCheck(mkt: Market): Promise<boolean> {
     
 
     // if prevTick is zero, then this is the first time we are checking
-    if (pool.prevTick == 0) {
-        return false
+    // TODO: rmv this check. prevTick should be set to 0 in init
+    try {
+        if (pool.prevTick == 0) {
+            return false
+        }
+        tickDelta = pool.tick! - pool.prevTick!
     }
-    
-    let tickDelta = pool.tick! - pool.prevTick!
+    catch(err) { console.error("ERROR: prevTick undefined for " + mkt.tkr) }
+        
 
     // wake up long/short on tick inc
     if ( (mkt.side == Side.LONG) && (tickDelta > config.TP_LONG_MIN_TICK_DELTA) ) {
@@ -374,6 +384,7 @@ async wakeUpCheck(mkt: Market): Promise<boolean> {
         try { 
             if(!pos) { 
                 await this.open(mkt.wallet,mkt.baseToken,Side.LONG,sz)
+                console.log("INFO: WAKEUP[" + mkt.name + "]" + "Dt:" + tickDelta)
                 return true
              } 
         }
@@ -660,6 +671,12 @@ async putMktToSleep(mkt: Market) {
     console.log(tstmp + ": INFO: Kill " + mkt.name + ", stldcoll: " + settledCol.toFixed(4) + " rret: " + ret.toFixed(2))
 }
 
+async holosCheck() :Promise<boolean> {
+// compute poolState tick changes segragating positive vs negative
+this.poolStateMap
+
+    return false
+}
 //----------------------------------------------------------------------------------------------------------
 // this check also update state: peak and uret
 // COND-ACT: on TP_MAX_LOSS close leg. When twin MAX_LOSS (pexit) rollStateCheck will restart
@@ -689,11 +706,11 @@ async legMaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
         mkt.uret = uret
         console.log(mkt.name + " cbasis:" + mkt.basisCollateral.toFixed(2) + " uret:" + uret.toFixed(4))
     } 
-    //dump ticks output for display
+    /*dump ticks output for display
     let dltatick = this.poolStateMap[mkt.tkr].tick! - this.poolStateMap[mkt.tkr].prevTick!
     if (dltatick != 0) {
         console.log(mkt.name + " dtks:" + dltatick ) 
-    }
+    }*/
     return check 
   }
 

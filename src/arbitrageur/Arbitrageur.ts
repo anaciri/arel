@@ -688,6 +688,11 @@ async legMaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
         mkt.uret = uret
         console.log(mkt.name + " cbasis:" + mkt.basisCollateral.toFixed(2) + " uret:" + uret.toFixed(4))
     } 
+    //dump ticks output for display
+    let dltatick = this.poolStateMap[mkt.name].tick! - this.poolStateMap[mkt.name].prevTick!
+    if (dltatick != 0) {
+        console.log(mkt.name + " dtks:" + dltatick ) 
+    }
     return check 
   }
 

@@ -13,6 +13,7 @@ import { max, padEnd, update } from "lodash"
 import { decode } from "punycode"
 import { Service } from "typedi"
 import config from "../configs/config.json"
+import * as fs from 'fs'
 //import { IUniswapV3PoolEvents } from "@perp/IUniswapV3PoolEvents";
 
 require('dotenv').config();
@@ -135,8 +136,7 @@ export class Arbitrageur extends BotService {
         
         this.createPoolStateMap()
         this.setupPoolListeners()
-        //todo
-        //await this.createMarketMap()
+        await this.createMarketMap()
         
     }
     // setup listeners for all pools
@@ -157,31 +157,30 @@ export class Arbitrageur extends BotService {
             const unipool = await this.perpService.createPool(this.poolStateMap[symb].poolAddr);
             // setup Swap event handler
             unipool.on('Swap', (sender: string, recipient: string, amount0: Big, amount1: Big, sqrtPriceX96: Big, liquidity: Big, tick: number, event: ethers.Event) => {
+                // update previous tick before overwriting
+                this.poolStateMap[symb].prevTick = this.poolStateMap[symb].tick
                 this.poolStateMap[symb].tick= tick
-                //const deltaTick = this.poolStateMap[symb].tick! - this.poolStateMap[symb].prevTick!
-                const prevTick = this.poolStateMap[symb].prevTick
-                this.poolStateMap[symb].prevTick = tick
+
                 // convert ticks to price: price = 1.0001 ** tick
                 let price = 1.0001 ** tick
 
                 const epoch = Math.floor(Date.now() / 1000).toString();
-                console.log(`${epoch}, ${symb}, ${prevTick}, ${this.poolStateMap[symb].tick}, ${price.toFixed(4)}`);
+                // TURN OFF CONSOLE LOGGING
+                //console.log(`${epoch}, ${symb}, ${this.poolStateMap[symb].prevTick}, ${this.poolStateMap[symb].tick}, ${price.toFixed(4)}`);
+                
+                const stream = fs.createWriteStream('ticks.csv'); 
+                stream.write(`${epoch}, ${symb}, ${this.poolStateMap[symb].prevTick}, ${this.poolStateMap[symb].tick}, ${price.toFixed(4)}\n`);
               });
-        
-            /*unipool.on('Swap', (event: ethers.Event) => {
-                const rawEventData = event.data;
-                console.log(event)
-                console.log(rawEventData)
-                });*/
+
             }
     }
 
-    async createPoolStateMap() {
+     createPoolStateMap() {
         for (const pool of this.perpService.metadata.pools) {
             this.poolStateMap[pool.baseSymbol] = { 
                 poolAddr: pool.address,
+                tick:0,  // otherwise wakeup check will choke
                 prevTick: 0,
-                tick: undefined
               };
         }
     }
@@ -231,7 +230,7 @@ export class Arbitrageur extends BotService {
 
     async start(): Promise<void> {
         this.ethService.enableEndpointRotation()
-        //this.arbitrageRoutine()
+        this.arbitrageRoutine()
     }
 
 
@@ -242,7 +241,9 @@ export class Arbitrageur extends BotService {
             await Promise.all(
                 Object.values(this.marketMap).map(async market => {
                     try {
-                        await this.arbitrage(market)
+                        // Biss 
+                        //await this.arbitrage(market)
+                        await this.checksRoutine(market)
                     } catch (err: any) {
                         await this.jerror({ event: "ArbitrageError", params: { err } })
                     }
@@ -257,7 +258,7 @@ export class Arbitrageur extends BotService {
  //------------------
 
 
- async isActive(leg: Market): Promise<boolean> {
+ async nonZeroPos(leg: Market): Promise<boolean> {
     let pos = (await this.perpService.getTotalPositionValue(leg.wallet.address, leg.baseToken)).toNumber()
     return (pos != 0)
  }
@@ -342,6 +343,58 @@ async rollEndTest(market: Market): Promise<boolean> {
         check = true
     }
     return check
+}
+//----------------------------------
+// wakeUpCheck
+//-----
+async wakeUpCheck(mkt: Market): Promise<boolean> { 
+    // get the tick delta for this market 
+    let btok = mkt.name.split("-")[0]
+    let pool = this.poolStateMap[btok]
+
+    // if tick undefined print error
+    if (typeof pool.tick === "undefined" || typeof pool.prevTick === "undefined") {
+        console.error("ERROR: tick undefined for " + btok);
+    }
+    
+
+    // if prevTick is zero, then this is the first time we are checking
+    if (pool.prevTick == 0) {
+        return false
+    }
+    
+    let tickDelta = pool.tick! - pool.prevTick!
+
+    // wake up long/short on tick inc
+    if ( (mkt.side == Side.LONG) && (tickDelta > config.TP_LONG_MIN_TICK_DELTA) ) {
+        // dont rely on active. probably should remove pay the price for a single read in lieu of gas wasted and complexity
+        let pos = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
+        let sz = mkt.startCollateral * mkt.leverage
+        try { 
+            if(!pos) { 
+                await this.open(mkt.wallet,mkt.baseToken,Side.LONG,sz)
+                return true
+             } 
+        }
+        catch(err) { console.error("OPEN FAILED in wakeUpCheck") }
+    }
+    else if ( (mkt.side == Side.SHORT) && (Math.abs(tickDelta) < config.TP_SHORT_MIN_TICK_DELTA) ) {
+        let pos = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
+        let sz = mkt.startCollateral * mkt.leverage
+        try {
+            if(!pos) {
+                await this.open(mkt.wallet,mkt.baseToken,Side.SHORT,sz)
+                console.log("INFO: WAKEUP[" + mkt.name + "]" + "Dt:" + tickDelta)
+                return true
+            }
+        }
+        catch(err) { console.error("OPEN FAILED in wakeUpCheck") }
+    }
+    if (tickDelta) {
+        console.log(mkt.name + ": " + tickDelta)
+    }
+
+    return false
 }
 
 //----------------------------------
@@ -506,7 +559,7 @@ async putWrongSideToSleep() : Promise<Result<boolean>> {
     let check = false
     let errStr = ""
     // only the undead can go to sleep
-    let activeMkts = Object.values(this.marketMap).filter(async m => (await this.isActive(m) == true))
+    let activeMkts = Object.values(this.marketMap).filter(async m => (await this.nonZeroPos(m) == true))
     .map( m => m.name)
     // groupby long/short gangs among the actives
     const longShortGang = activeMkts.reduce<{ sgang: string[], lgang: string[] }>
@@ -595,17 +648,11 @@ async oneSidedTransitionCheck() :Promise<boolean> {
 async putMktToSleep(mkt: Market) {
     try {
         await this.close(mkt) 
-
     }
     catch(err) {
         console.error("Failed closed in putMktToSleep")
     }
-    // compute terminal wealth contribution before overwrite
-            // below no longer needed done in dtor/close
-            //let scoll = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
-            //this.marketMap[mkt.name].startCollateral = scoll
-            // note: this.close takes care of updating collat values
-            let oldStartCol = mkt.basisCollateral
+         let oldStartCol = mkt.basisCollateral
             let settledCol = mkt.startCollateral //updated in this.close
             let ret = 1 + (settledCol-oldStartCol)/oldStartCol
             let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
@@ -624,7 +671,7 @@ async legMaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
     // skip if market inactive
     let check = false
     let leg = this.marketMap[mkt.name]
-    if (await this.isActive(leg)) { 
+    if (await this.nonZeroPos(leg)) { 
         // collatbasis is the peak colateral
         let collatbasis = mkt.basisCollateral
         const col = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
@@ -644,6 +691,16 @@ async legMaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
     return check 
   }
 
+  async checksRoutine(market: Market) {
+    // check for TP_MAX_LOSS
+    if ( await this.legMaxLossCheckAndStateUpd(market) ) {   // have a positive => close took place. check for qrom crossing
+        this.putMktToSleep(market)
+    }
+
+    // selective wake up
+    await this.wakeUpCheck(market) //wakeup only favored leg if sided mkt else both
+  }
+
     async arbitrage(market: Market) {
             if ( await this.legMaxLossCheckAndStateUpd(market) ) {   // have a positive => close took place. check for qrom crossing
                 this.putMktToSleep(market)
@@ -655,7 +712,7 @@ async legMaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
             // ROLL.END.Condition: (!mkt.active &&  !mk.twin.active)
             //if (await this.rollEndTest(market)) {
             await this.rollEndCheck(market) //wakeup only favored leg if sided mkt else both
-        }
+     }
  
 /* HIDE        
         //--- Get pnl/free collat

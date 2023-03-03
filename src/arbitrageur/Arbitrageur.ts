@@ -167,8 +167,8 @@ export class Arbitrageur extends BotService {
                 const epoch = Math.floor(Date.now() / 1000).toString();
                 // TURN OFF CONSOLE LOGGING
                 //console.log(`${epoch}, ${symb}, ${this.poolStateMap[symb].prevTick}, ${this.poolStateMap[symb].tick}, ${price.toFixed(4)}`);
-                
-                const stream = fs.createWriteStream('ticks.csv'); 
+                // append to file
+                const stream = fs.createWriteStream('ticks.csv', {flags:'a'} ); 
                 stream.write(`${epoch}, ${symb}, ${this.poolStateMap[symb].prevTick}, ${this.poolStateMap[symb].tick}, ${price.toFixed(4)}\n`);
               });
 

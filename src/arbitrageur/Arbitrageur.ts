@@ -384,26 +384,29 @@ async wakeUpCheck(mkt: Market): Promise<boolean> {
         try { 
             if(!pos) { 
                 await this.open(mkt.wallet,mkt.baseToken,Side.LONG,sz)
-                console.log("INFO: WAKEUP[" + mkt.name + "]" + "Dt:" + tickDelta)
+                let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
+                console.log(tstmp + " INFO: WAKEUP:" + mkt.name + " Dt:" + tickDelta)
                 return true
              } 
         }
         catch(err) { console.error("OPEN FAILED in wakeUpCheck") }
     }
-    else if ( (mkt.side == Side.SHORT) && (Math.abs(tickDelta) < config.TP_SHORT_MIN_TICK_DELTA) ) {
+    else if ( (mkt.side == Side.SHORT) && (Math.abs(tickDelta) > config.TP_SHORT_MIN_TICK_DELTA) ) {
         let pos = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
         let sz = mkt.startCollateral * mkt.leverage
         try {
             if(!pos) {
                 await this.open(mkt.wallet,mkt.baseToken,Side.SHORT,sz)
-                console.log("INFO: WAKEUP[" + mkt.name + "]" + "Dt:" + tickDelta)
+                let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
+                console.log(tstmp + " INFO: WAKEUP:" + mkt.name + " Dt:" + tickDelta)
                 return true
             }
         }
         catch(err) { console.error("OPEN FAILED in wakeUpCheck") }
     }
+
     if (tickDelta) {
-        console.log(mkt.name + ": " + tickDelta)
+        console.log("tickDelta:" + mkt.name + ": " + tickDelta)
     }
 
     return false

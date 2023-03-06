@@ -85,6 +85,8 @@ interface Market {
     baseToken: string
     rollEndLock: boolean
     poolAddr: string
+    longEntryTickDelta: number
+    shortEntryTickDelta: number
     minReturn: number
     maxReturn: number
     uret: number  // unrealized return
@@ -119,11 +121,9 @@ export class Arbitrageur extends BotService {
     private pkMap = new Map<string, string>()
     private marketMap: { [key: string]: Market } = {}
     private readonly arbitrageMaxGasFeeEth = Big(config.ARBITRAGE_MAX_GAS_FEE_ETH)
-    private holosSide: Direction | null = null
-    private prevHolsSide: Direction | null = null
+    private holosSide: Direction = Direction.ZEBRA
+    private prevHolsSide: Direction = Direction.ZEBRA
     private poolStateMap: { [keys: string]: PoolState } = {}
-
-    //private closedHolos: string[] = []
 
 
     async setup(): Promise<void> {
@@ -223,6 +223,8 @@ export class Arbitrageur extends BotService {
 //              peakCollateral: market.START_COLLATERAL,
                 resetLeverage: market.RESET_LEVERAGE,
                 leverage: market.RESET_LEVERAGE,
+                longEntryTickDelta: market.TP_LONG_MIN_TICK_DELTA,
+                shortEntryTickDelta: market.TP_SHORT_MIN_TICK_DELTA,
                 cummulativeLoss: 0,
                 maxPnl: 0,
                 notionalBasis: config.TP_START_CAP*market.RESET_LEVERAGE,
@@ -363,15 +365,7 @@ async wakeUpCheck(mkt: Market): Promise<boolean> {
     // get the tick delta for this market 
     let tickDelta = 0
     let pool = this.poolStateMap[mkt.tkr]
-
-    /* if tick undefined print error
-    if (typeof pool.tick === "undefined" || typeof pool.prevTick === "undefined") {
-        console.error("ERROR: tick undefined for " + btok);
-    }*/
-    
-
-    // if prevTick is zero, then this is the first time we are checking
-    // TODO: rmv this check. prevTick should be set to 0 in init
+   
     try {
         if (pool.prevTick == 0) {
             return false
@@ -379,10 +373,9 @@ async wakeUpCheck(mkt: Market): Promise<boolean> {
         tickDelta = pool.tick! - pool.prevTick!
     }
     catch(err) { console.error("ERROR: prevTick undefined for " + mkt.tkr) }
-        
 
     // wake up long/short on tick inc
-    if ( (mkt.side == Side.LONG) && (tickDelta > config.TP_LONG_MIN_TICK_DELTA) ) {
+    if ( (mkt.side == Side.LONG) && (tickDelta > mkt.longEntryTickDelta) ) {
         // dont rely on active. probably should remove pay the price for a single read in lieu of gas wasted and complexity
         let pos = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
         let sz = mkt.startCollateral * mkt.leverage
@@ -396,7 +389,7 @@ async wakeUpCheck(mkt: Market): Promise<boolean> {
         }
         catch(err) { console.error("OPEN FAILED in wakeUpCheck") }
     }
-    else if ( (mkt.side == Side.SHORT) && (Math.abs(tickDelta) > config.TP_SHORT_MIN_TICK_DELTA) ) {
+    else if ( (mkt.side == Side.SHORT) && (Math.abs(tickDelta) > mkt.shortEntryTickDelta) ) {
         let pos = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
         let sz = mkt.startCollateral * mkt.leverage
         try {
@@ -661,7 +654,7 @@ async prematureSideClose(unfavSide: Side) {
 // ASSERT TP_MIN_COL_RATIO > TP_MAX_LOSS
 // Critera for regime switch: collateral/startCollateral == MaxLoss collateral ratio
 // Criterial can be cusotmizez
-
+/*
 async oneSidedTransitionCheck() :Promise<boolean> {
     // true only if mkt switch from null to one sided OR sides flipped e.g from rally to bear
     let check = false
@@ -706,7 +699,7 @@ async oneSidedTransitionCheck() :Promise<boolean> {
 
         return check
 }  
-
+*/
 async putMktToSleep(mkt: Market) {
     try {
         await this.close(mkt) 
@@ -783,8 +776,10 @@ async legMaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
     async holosDirectionChangeCheck(): Promise<boolean> {
         // which pools have moved at least say 10 ticks to ignore noise
         const minMoveList = Object.values(this.poolStateMap).filter(
-            (pool) => Math.abs(pool.tick! - pool.prevTick!) > config.TP_QROM_ABS_TICK_SZ );
+            (pool) =>( Math.abs(pool.tick! - pool.prevTick!) > config.TP_QROM_ABS_TICK_SZ )
+                      && (pool.prevTick!) != 0 )
             // segregate positive and negative moves
+        if (minMoveList.length) {
           const posPools = minMoveList.filter((pool) => pool.tick! - pool.prevTick! > 0
           );
           const negPools = minMoveList.filter((poolState) => poolState.tick! - poolState.prevTick! < 0
@@ -801,14 +796,14 @@ async legMaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
               (posPools.length / count < config.TP_QRM_DIR_CHANGE_MIN_PCT)) {
                 currDir = Direction.BEAR;
           } 
-          // did it change to a non-zebra
           if ((this.prevHolsSide !== currDir) && (currDir === Direction.TORO || currDir === Direction.BEAR)) {
             // update direction and return true
             this.prevHolsSide = this.holosSide //save before overwrite
             this.holosSide = currDir
             return true
           }
-           
+        } 
+
         return false
     }
 /* HIDE 

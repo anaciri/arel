@@ -119,8 +119,8 @@ export class Arbitrageur extends BotService {
     private pkMap = new Map<string, string>()
     private marketMap: { [key: string]: Market } = {}
     private readonly arbitrageMaxGasFeeEth = Big(config.ARBITRAGE_MAX_GAS_FEE_ETH)
-    private holosSide: Side | null = null
-    private prevHolsSide: Side | null = null
+    private holosSide: Direction | null = null
+    private prevHolsSide: Direction | null = null
     private poolStateMap: { [keys: string]: PoolState } = {}
 
     //private closedHolos: string[] = []
@@ -263,6 +263,10 @@ export class Arbitrageur extends BotService {
     
  // TODO move to butil file
  //------------------
+
+ async getPosVal(leg: Market): Promise<Number> {
+    return (await this.perpService.getTotalPositionValue(leg.wallet.address, leg.baseToken)).toNumber()
+ }
 
 
  async nonZeroPos(leg: Market): Promise<boolean> {
@@ -416,7 +420,7 @@ async wakeUpCheck(mkt: Market): Promise<boolean> {
 // trigger: roll ended
 // if sideless open both sides (twins). else only the favored side of the twins
 // ASSERT this.leg and twin have no position
-
+/*
 async rollEndCheck(market: Market): Promise<boolean> { 
 // check first if this check running for this mkt
 let check = false
@@ -493,6 +497,7 @@ console.log(tstmp + ": INFO ROLL.END[" + market.name + "] leg-twin col: " + leg.
     console.log("UnlockRollEndCheck")
     return  check
 }
+*/
 //----------------------------------------------------------------------------------------------------------
 // DESC: if both dados are stopped then is end of roll and rethrow both dados
 // COND-ACT: 
@@ -570,6 +575,7 @@ async rollEndCheck(market: Market): Promise<Result<boolean>> {
 // losing gang has been identified however will pardon anyone in the loser gang with good perf 
 // e.g TP_MIN_PARDON_RATIO > 1.1
 // ASSERT holosSide is NOT null and changed from one non-zbra to another non-zbra
+/*
 async putWrongSideToSleep() : Promise<Result<boolean>> {
     let check = false
     let errStr = ""
@@ -603,7 +609,39 @@ async putWrongSideToSleep() : Promise<Result<boolean>> {
         }
     return {positive: check, error: Error(errStr) }
 }
+*/
 
+async prematureSideClose(unfavSide: Side) {
+    // group markets by side using position value (pos < 0 is short, 0 is inactive)
+    // only the undead can go to sleep
+    let activeMkts = Object.values(this.marketMap).filter(async m => (await this.getPosVal(m) != 0)).map( m => m.name)
+    
+    // groupby long/short gangs among the actives
+    const longShortGang = activeMkts.reduce<{ sgang: string[], lgang: string[] }>
+                    ((grps, item) => { item.endsWith("SHORT") ? grps.sgang.push(item) : grps.lgang.push(item);
+                                      return grps; }, 
+                                      { sgang: [], lgang: [] })
+    // put on death row mkts in the 'wrong' side. side was updated in oneSidedMarketSwitch 
+    // if direction is TORO then put on death row the shorts 
+    //let markedSide = (unfavSide == Direction.TORO) ? Side.LONG : Side.SHORT                   
+    let deathrow = (unfavSide == Side.LONG) ? longShortGang.lgang : longShortGang.sgang
+    // spare the good performers in the losing gang
+    let pardonned = Object.values(deathrow).filter((n) => 
+                    this.marketMap[n].basisCollateral/this.marketMap[n].startCollateral > config.TP_MIN_PARDON_RATIO )
+    let toExecute = deathrow.filter( (n) => !pardonned.includes(n) )
+    // cull the undesirebles
+    if(toExecute.length)
+        for (const i of deathrow ) {
+//            const n = this.marketMap[m].name
+            try {
+                await this.close(this.marketMap[i])
+                // this.close will take care of updating start/basisCollat 
+            }
+            catch { 
+                "QRM.Close failed:" + this.marketMap[i].name
+            }
+        }
+}
 
 // DESC: flags if regime switch to one sided (bull or bear) really is a Participation signal
 // uret < TP_QRM_MIN_RET. this value SHOULD be higher than TP_MAX_LOSS_RATIO e.g if maxloss is 91 
@@ -722,11 +760,48 @@ async legMaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
     if ( await this.legMaxLossCheckAndStateUpd(market) ) {   // have a positive => close took place. check for qrom crossing
         this.putMktToSleep(market)
     }
-
+    // holos close check
+    if ( await this.holosDirectionChangeCheck() ) {   
+            // unfav is shorts in a toro and longs in a bear
+            let unfav =  (this.holosSide == Direction.TORO ? Side.SHORT : Side.LONG)
+            this.prematureSideClose(unfav)
+    }
     // selective wake up
     await this.wakeUpCheck(market) //wakeup only favored leg if sided mkt else both
   }
-
+    
+    // check if there is a direction change into a non-zebra beast
+    async holosDirectionChangeCheck(): Promise<boolean> {
+        // which pools have moved at least say 10 ticks to ignore noise
+        const minMoveList = Object.values(this.poolStateMap).filter(
+            (pool) => Math.abs(pool.tick! - pool.prevTick!) > config.TP_QROM_ABS_TICK_SZ );
+            // segregate positive and negative moves
+          const posPools = minMoveList.filter((pool) => pool.tick! - pool.prevTick! > 0
+          );
+          const negPools = minMoveList.filter((poolState) => poolState.tick! - poolState.prevTick! < 0
+          );
+          
+          // update direction if meets threadhold
+          let currDir
+          if ((posPools.length / minMoveList.length > config.TP_QRM_DIR_CHANGE_MIN_PCT)  && 
+              (negPools.length / minMoveList.length < config.TP_QRM_DIR_CHANGE_MIN_PCT)) {
+                currDir = Direction.TORO;
+          } 
+          if ((negPools.length / minMoveList.length > config.TP_QRM_DIR_CHANGE_MIN_PCT)  && 
+              (posPools.length / minMoveList.length < config.TP_QRM_DIR_CHANGE_MIN_PCT)) {
+                currDir = Direction.BEAR;
+          } 
+          // did it change to a non-zebra
+          if ((this.prevHolsSide !== currDir) && (currDir === Direction.TORO || currDir === Direction.BEAR)) {
+            // update direction and return true
+            this.prevHolsSide = this.holosSide //save before overwrite
+            this.holosSide = currDir
+            return true
+          }
+           
+        return false
+    }
+/* HIDE 
     async arbitrage(market: Market) {
             if ( await this.legMaxLossCheckAndStateUpd(market) ) {   // have a positive => close took place. check for qrom crossing
                 this.putMktToSleep(market)
@@ -740,7 +815,7 @@ async legMaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
             await this.rollEndCheck(market) //wakeup only favored leg if sided mkt else both
      }
  
-/* HIDE        
+       
         //--- Get pnl/free collat
         //--- factor out to avoid recomputing unnecesary on most cycles
         let wlt = this.ethService.privateKeyToWallet(this.pkMap.get(market.name)!)

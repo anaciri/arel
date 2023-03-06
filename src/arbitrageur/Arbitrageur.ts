@@ -265,7 +265,8 @@ export class Arbitrageur extends BotService {
  //------------------
 
  async getPosVal(leg: Market): Promise<Number> {
-    return (await this.perpService.getTotalPositionValue(leg.wallet.address, leg.baseToken)).toNumber()
+    let pv =  (await this.perpService.getTotalPositionValue(leg.wallet.address, leg.baseToken)).toNumber()
+    return pv
  }
 
 
@@ -614,11 +615,19 @@ async putWrongSideToSleep() : Promise<Result<boolean>> {
 async prematureSideClose(unfavSide: Side) {
     // group markets by side using position value (pos < 0 is short, 0 is inactive)
     // only the undead can go to sleep
-    let activeMkts = Object.values(this.marketMap).filter(async m => (await this.getPosVal(m) != 0)).map( m => m.name)
+
+    let nonzeroPos: Market[] = []
+    for (const m of Object.values(this.marketMap)) {
+        let pos = await this.getPosVal(m)
+        if (pos != 0) {
+            nonzeroPos.push(m)
+        }
+    }
+    //let nonzeroPos = Object.values(this.marketMap).filter(async m => (await this.getPosVal(m) >  0) || (await this.getPosVal(m) >  0)).map( m => m.name)
     
     // groupby long/short gangs among the actives
-    const longShortGang = activeMkts.reduce<{ sgang: string[], lgang: string[] }>
-                    ((grps, item) => { item.endsWith("SHORT") ? grps.sgang.push(item) : grps.lgang.push(item);
+    const longShortGang = nonzeroPos.reduce<{ sgang: Market[], lgang: Market[] }>
+                    ((grps, item) => { item.name.endsWith("SHORT") ? grps.sgang.push(item) : grps.lgang.push(item);
                                       return grps; }, 
                                       { sgang: [], lgang: [] })
     // put on death row mkts in the 'wrong' side. side was updated in oneSidedMarketSwitch 
@@ -627,18 +636,18 @@ async prematureSideClose(unfavSide: Side) {
     let deathrow = (unfavSide == Side.LONG) ? longShortGang.lgang : longShortGang.sgang
     // spare the good performers in the losing gang
     let pardonned = Object.values(deathrow).filter((n) => 
-                    this.marketMap[n].basisCollateral/this.marketMap[n].startCollateral > config.TP_MIN_PARDON_RATIO )
+                    n.basisCollateral / n.startCollateral > config.TP_MIN_PARDON_RATIO )
     let toExecute = deathrow.filter( (n) => !pardonned.includes(n) )
     // cull the undesirebles
     if(toExecute.length)
-        for (const i of deathrow ) {
+        for (const m of deathrow ) {
 //            const n = this.marketMap[m].name
             try {
-                await this.close(this.marketMap[i])
+                await this.close(m)
                 // this.close will take care of updating start/basisCollat 
             }
             catch { 
-                "QRM.Close failed:" + this.marketMap[i].name
+                "QRM.Close failed:" + m.name
             }
         }
 }
@@ -783,12 +792,13 @@ async legMaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
           
           // update direction if meets threadhold
           let currDir
-          if ((posPools.length / minMoveList.length > config.TP_QRM_DIR_CHANGE_MIN_PCT)  && 
-              (negPools.length / minMoveList.length < config.TP_QRM_DIR_CHANGE_MIN_PCT)) {
+          let count = Object.keys(this.poolStateMap).length
+          if ((posPools.length / count > config.TP_QRM_DIR_CHANGE_MIN_PCT)  && 
+              (negPools.length / count < config.TP_QRM_DIR_CHANGE_MIN_PCT)) {
                 currDir = Direction.TORO;
           } 
-          if ((negPools.length / minMoveList.length > config.TP_QRM_DIR_CHANGE_MIN_PCT)  && 
-              (posPools.length / minMoveList.length < config.TP_QRM_DIR_CHANGE_MIN_PCT)) {
+          if ((negPools.length / count > config.TP_QRM_DIR_CHANGE_MIN_PCT)  && 
+              (posPools.length / count < config.TP_QRM_DIR_CHANGE_MIN_PCT)) {
                 currDir = Direction.BEAR;
           } 
           // did it change to a non-zebra

@@ -92,8 +92,9 @@ interface Market {
     uret: number  // unrealized return
     minMarginRatio: number
     maxMarginRatio: number
-    basisCollateral: number
-    startCollateral: number
+    basisCollateral: number // current collateral including pnl
+    startCollateral: number // gets reset everytme we reopen
+    initCollateral: number  // read from config aka seed
     twin: string
 //    peakCollateral: number
     resetLeverage: number
@@ -218,9 +219,9 @@ export class Arbitrageur extends BotService {
                 uret: 1,
                 minMarginRatio: market.MIN_MARGIN_RATIO,
                 maxMarginRatio: market.MAX_MARGIN_RATIO,
-                basisCollateral: market.START_COLLATERAL,
-                startCollateral: market.START_COLLATERAL,
-//              peakCollateral: market.START_COLLATERAL,
+                initCollateral: market.START_COLLATERAL,  // will not change until restart
+                startCollateral: market.START_COLLATERAL, // will change to previous settled collatera
+                basisCollateral: market.START_COLLATERAL, // incl unrealized profit
                 resetLeverage: market.RESET_LEVERAGE,
                 leverage: market.RESET_LEVERAGE,
                 longEntryTickDelta: market.TP_LONG_MIN_TICK_DELTA,
@@ -326,6 +327,23 @@ async closeMkt( mktName: string) {
         }
  } 
 
+// report to run onProcessExit
+genTWreport() {
+    for (const m in this.marketMap) {
+        let mkt = this.marketMap[m]
+    }
+    // open a file for writing  
+    let twrstrm = fs.createWriteStream('twreport.csv');
+    // write headerr
+    twrstrm.write(`name, startCollat, endCollat, isSettled\n`);
+    // write data
+//    Object.values(this.marketMap).forEach(m => {
+    for(const m of Object.values(this.marketMap)) {
+        let isSettled = m.startCollateral == m.basisCollateral ? "true" : "false"
+        twrstrm.write(`${m.name}, ${m.initCollateral}, ${m.basisCollateral}, ${isSettled}\n`)
+    }
+    twrstrm.end()
+ }
 //----------------------------------
 //maxCumLossCheck(mkt: Market): Result<number> { return {value: null } }
 // DESCRPT test if a batok (base token) had ended roll and computes TW stats
@@ -756,7 +774,9 @@ async legMaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
     }*/
     return check 
   }
-
+//--------------------------------------------------------------------------------------
+//  mainRoutine
+//--------------------------------------------------------------------------------------
   async checksRoutine(market: Market) {
     // check for TP_MAX_LOSS
     if ( await this.legMaxLossCheckAndStateUpd(market) ) {   // have a positive => close took place. check for qrom crossing

@@ -389,7 +389,7 @@ async wakeUpCheck(mkt: Market): Promise<boolean> {
         }
         catch(err) { console.error("OPEN FAILED in wakeUpCheck") }
     }
-    else if ( (mkt.side == Side.SHORT) && (Math.abs(tickDelta) > mkt.shortEntryTickDelta) ) {
+    else if ( (mkt.side == Side.SHORT) && (tickDelta < 0) && (Math.abs(tickDelta) > mkt.shortEntryTickDelta) ) {
         let pos = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
         let sz = mkt.startCollateral * mkt.leverage
         try {

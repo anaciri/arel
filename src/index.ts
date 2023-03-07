@@ -32,8 +32,8 @@ export async function main(): Promise<void> {
     
     const arbitrageur = Container.get(Arbitrageur)
     // install exit listeners to clean up
-    process.on("SIGINT", () => { console.log("Process is exiting..."); arbitrageur.genTWreport(); })
-//    process.on("exit", () => { console.log("Process is exiting..."); exitRoutine(); })
+    //process.on("SIGINT", () => { console.log("Process is exiting..."); arbitrageur.genTWreport(); })
+    process.on("exit", () => { console.log("Process is exiting..."); arbitrageur.genTWreport(); })
 //    process.on("SIGINT", () => { console.log("Received SIGINT signal...");exitRoutine(); process.exit(0); })
     await arbitrageur.setup()
     await arbitrageur.start()

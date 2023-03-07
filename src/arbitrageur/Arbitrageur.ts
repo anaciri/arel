@@ -343,6 +343,7 @@ genTWreport() {
         twrstrm.write(`${m.name}, ${m.initCollateral}, ${m.basisCollateral}, ${isSettled}\n`)
     }
     twrstrm.end()
+    twrstrm.close()
  }
 //----------------------------------
 //maxCumLossCheck(mkt: Market): Result<number> { return {value: null } }

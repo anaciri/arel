@@ -278,10 +278,26 @@ export class Arbitrageur extends BotService {
     return (pos != 0)
  }
 
-
+ async open(mkt: Market, usdAmount: number ) {
+    try {
+        await this.openPosition(mkt.wallet, mkt.baseToken ,mkt.side ,AmountType.QUOTE,Big(usdAmount),undefined,undefined,undefined)
+            // no garanteed that collateral basis/start were updated on the assumed previous close
+            let scoll = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
+            mkt.basisCollateral = scoll
+            mkt.startCollateral = scoll
+        }
+        catch (e: any) {
+            console.error(`ERROR: FAILED OPEN. Rotating endpoint: ${e.toString()}`)
+            this.ethService.rotateToNextEndpoint()
+            await this.openPosition( mkt.wallet,mkt.baseToken,mkt.side,AmountType.QUOTE, Big(usdAmount),undefined,undefined,undefined )
+            console.log("Re-oppened...")
+        }
+ }
+/*
  async open(wlt: ethers.Wallet, btoken: string, side: Side, usdAmount: number ) {
     try {
         await this.openPosition(wlt!, btoken ,side,AmountType.QUOTE,Big(usdAmount),undefined,undefined,undefined)
+                let scoll = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
         }
         catch (e: any) {
             console.error(`ERROR: FAILED OPEN. Rotating endpoint: ${e.toString()}`)
@@ -289,7 +305,7 @@ export class Arbitrageur extends BotService {
             await this.openPosition( wlt!,btoken,side,AmountType.QUOTE, Big(usdAmount),undefined,undefined,undefined )
             console.log("Re-oppened...")
         }
- }
+ }*/
 
  // close sort of dtor. do all bookeeping and cleanup here
  //REFACTOR: this.close(mkt) will make it easier for functinal styling
@@ -400,7 +416,7 @@ async wakeUpCheck(mkt: Market): Promise<boolean> {
         let sz = mkt.startCollateral * mkt.leverage
         try { 
             if(!pos) { 
-                await this.open(mkt.wallet,mkt.baseToken,Side.LONG,sz)
+                await this.open(mkt,sz)
                 let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
                 console.log(tstmp + " INFO: WAKEUP:" + mkt.name + " Dt:" + tickDelta)
                 return true
@@ -413,7 +429,7 @@ async wakeUpCheck(mkt: Market): Promise<boolean> {
         let sz = mkt.startCollateral * mkt.leverage
         try {
             if(!pos) {
-                await this.open(mkt.wallet,mkt.baseToken,Side.SHORT,sz)
+                await this.open(mkt,sz)
                 let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
                 console.log(tstmp + " INFO: WAKEUP:" + mkt.name + " Dt:" + tickDelta)
                 return true

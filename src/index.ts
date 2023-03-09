@@ -33,18 +33,14 @@ export async function main(): Promise<void> {
     const arbitrageur = Container.get(Arbitrageur)
     // install exit listeners to clean up
     //process.on("SIGINT", () => { console.log("Process is exiting..."); arbitrageur.genTWreport(); })
-    process.on("exit", () => { console.log("Process is exiting..."); arbitrageur.genTWreport(); })
-//    process.on("SIGINT", () => { console.log("Received SIGINT signal...");exitRoutine(); process.exit(0); })
+    //process.on("beforeExit", () => { console.log("Process is exiting..."); arbitrageur.genTWreport(); })
+process.on("SIGINT", () => { console.log("Received SIGINT signal...");arbitrageur.genTWreport(); process.exit(0); })
     await arbitrageur.setup()
     await arbitrageur.start()
 }
-function genTWreport(): void {
-    //TODO: genTWreport()
-    // open csv file
-    // loop through markeMap and write: name, startCollateral, currCollatera, flag: basis or settled
-}
+
 function exitRoutine(): void {
-    //TODO: genTWreport()
+    //TODO: cleanup()
 }
 const isInLambda = !!process.env.LAMBDA_RUNTIME_DIR
 if (require.main === module && !isInLambda) {

@@ -171,14 +171,12 @@ export class Arbitrageur extends BotService {
                 // update previous tick before overwriting
                 this.poolStateMap[symb].prevTick = this.poolStateMap[symb].tick
                 this.poolStateMap[symb].tick= tick
-
                 // convert ticks to price: price = 1.0001 ** tick
                 let price = 1.0001 ** tick
 
                 const epoch = Math.floor(Date.now() / 1000).toString();
-                // TURN OFF CONSOLE LOGGING
+                // TURN OFF CONSOLE LOGGING. append to file
                 //console.log(`${epoch}, ${symb}, ${this.poolStateMap[symb].prevTick}, ${this.poolStateMap[symb].tick}, ${price.toFixed(4)}`);
-                // append to file
                 const stream = fs.createWriteStream('ticks.csv', {flags:'a'} ); 
                 stream.write(`${epoch}, ${symb}, ${this.poolStateMap[symb].prevTick}, ${this.poolStateMap[symb].tick}, ${price.toFixed(4)}\n`);
               });
@@ -241,7 +239,8 @@ export class Arbitrageur extends BotService {
     }
 
     async start(): Promise<void> {
-        this.ethService.enableEndpointRotation()
+        //TODO.BIZCONT renable rotation to do the health checks
+        //this.ethService.enableEndpointRotation()
         this.arbitrageRoutine()
     }
 
@@ -816,7 +815,13 @@ async maxMaxMarginRatioCheck(market: Market) {
     // compute additional size to bring down the margin ratio to reset value
     // mr = (collatBasis)/positionValue=positionSize*price => positionSize = collatBasis/price*mr
     
-    let price = Math.pow(1.0001, tick!)
+    let tickPrice = Math.pow(1.0001, tick!)
+    let idxPrice = (await this.perpService.getIndexPrice(market.tkr)).toNumber()
+    let mktPrice = (await this.perpService.getMarketPrice(market.tkr)).toNumber()
+
+    // tick price results in mr higher than reset. go for lowest price
+    let price = Math.min(tickPrice, idxPrice, mktPrice)
+
     let sz  = market.basisCollateral/price*market.resetMargin
     // add to the position and recompute margin ratio
     await this.open(market, sz*price)
@@ -824,14 +829,40 @@ async maxMaxMarginRatioCheck(market: Market) {
     pv = (await this.perpService.getTotalAbsPositionValue(market.wallet.address)).toNumber()
     let newmr = market.basisCollateral/pv
     let tmstmp = new Date().toLocaleTimeString([], {hour12: false, timeZone: 'America/New_York'});
-    console.log(tmstmp + " INFO: MARGIN RESET: " + "prev mr:" + mr + " new mr:" + newmr + " sz:" + sz)
+    console.log(tmstmp + " INFO: tick, indx, market Price: " + tickPrice + " " + idxPrice + " " + mktPrice)
+    console.log(" INFO: MARGIN RESET: " + market.name + " prv mr:" + mr.toFixed() + " nu mr:" + newmr.toFixed() + " sz:" + sz)
     }
 }
 //--------------------------------------------------------------------------------------
+// TODO: factor this check out of here
+//--------------------------------------------------------------------------------------
+async ensureSwapListenersOK(): Promise<void> {
+    for (const symb in this.poolStateMap) {
+      const unipool = await this.perpService.createPool(this.poolStateMap[symb].poolAddr);
+  
+      const swapListenerCount = await unipool.listenerCount('Swap');
+      //TOOD.OPTIMIZATION: if the first one is not installed, others very likely not installed either
+      if (swapListenerCount === 0) {
+        unipool.on('Swap', (sender: string, recipient: string, amount0: Big, amount1: Big, sqrtPriceX96: Big, liquidity: Big, tick: number, event: ethers.Event) => {
+            // update previous tick before overwriting
+            this.poolStateMap[symb].prevTick = this.poolStateMap[symb].tick
+            this.poolStateMap[symb].tick= tick
+            let price = 1.0001 ** tick
+            const epoch = Math.floor(Date.now() / 1000).toString();
+            const stream = fs.createWriteStream('ticks.csv', {flags:'a'} ); 
+            stream.write(`${epoch}, ${symb}, ${this.poolStateMap[symb].prevTick}, ${this.poolStateMap[symb].tick}, ${price.toFixed(4)}\n`);
+          });
+        console.log(`SETUP: Missing Swap. Adding listener for ${symb}`);    
+      }
+    }
+  }
+  
 //  mainRoutine
 // TODO: OPTIMIZE: batch all checks for all legs. can avoid unnecessary checks e.g if SHORT leg above threshold twin will not
 //--------------------------------------------------------------------------------------
   async checksRoutine(market: Market) {
+    //TODO.BIZCONT redo ensureSwapListenersOK, it will always return listerneCounter of zero coz new instance
+    //await this.ensureSwapListenersOK()
     // check for TP_MAX_LOSS
     if ( await this.legMaxLossCheckAndStateUpd(market) ) {   // have a positive => close took place. check for qrom crossing
         this.putMktToSleep(market)

@@ -14,6 +14,7 @@ import { decode } from "punycode"
 import { Service } from "typedi"
 import config from "../configs/config.json"
 import * as fs from 'fs'
+import { tmpdir } from "os"
 //import { IUniswapV3PoolEvents } from "@perp/IUniswapV3PoolEvents";
 
 require('dotenv').config();
@@ -97,12 +98,12 @@ interface Market {
     initCollateral: number  // read from config aka seed
     twin: string
 //    peakCollateral: number
-    resetLeverage: number
-    leverage: number
+    resetMargin: number
+    //leverage: number
     resetNeeded:boolean
     resetSize: number
     cummulativeLoss: number
-    notionalBasis: number
+    //notionalBasis: number
     maxPnl: number
 // TODO.RMV
 orderAmount: Big
@@ -143,6 +144,9 @@ export class Arbitrageur extends BotService {
         await this.createNonceMutex([...wlts.values()])
         
         this.createPoolStateMap()
+        // setup listeners for all node endpoints
+        //not needed coz on rotate it will reregister listeners
+       //for ( let i = 0; i < this.ethService.web3Endpoints.length; ++i )
         this.setupPoolListeners()
         await this.createMarketMap()
         
@@ -161,7 +165,6 @@ export class Arbitrageur extends BotService {
     async setupPoolListeners(): Promise<void> {
         //for (const p of this.perpService.metadata.pools) {
         for (const symb in this.poolStateMap) {
-
             const unipool = await this.perpService.createPool(this.poolStateMap[symb].poolAddr);
             // setup Swap event handler
             unipool.on('Swap', (sender: string, recipient: string, amount0: Big, amount1: Big, sqrtPriceX96: Big, liquidity: Big, tick: number, event: ethers.Event) => {
@@ -222,13 +225,12 @@ export class Arbitrageur extends BotService {
                 initCollateral: market.START_COLLATERAL,  // will not change until restart
                 startCollateral: market.START_COLLATERAL, // will change to previous settled collatera
                 basisCollateral: market.START_COLLATERAL, // incl unrealized profit
-                resetLeverage: market.RESET_LEVERAGE,
-                leverage: market.RESET_LEVERAGE,
+                resetMargin: market.RESET_MARGIN,
                 longEntryTickDelta: market.TP_LONG_MIN_TICK_DELTA,
                 shortEntryTickDelta: market.TP_SHORT_MIN_TICK_DELTA,
                 cummulativeLoss: 0,
                 maxPnl: 0,
-                notionalBasis: config.TP_START_CAP*market.RESET_LEVERAGE,
+                //notionalBasis: config.TP_START_CAP/market.RESET_MARGIN,
                 //TODO.rmv
                 rollEndLock:false,
                 resetNeeded: false,
@@ -310,6 +312,14 @@ export class Arbitrageur extends BotService {
  // close sort of dtor. do all bookeeping and cleanup here
  //REFACTOR: this.close(mkt) will make it easier for functinal styling
  // onClose startCollateral == basisCollateral == settledCollatOnClose
+ rotateToNextProvider() {
+    // upon running eth.rotateToNextEndpoint. listeners are lost. need to re-register against new provider in ethService
+    this.ethService.rotateToNextEndpoint()
+    this.setupPoolListeners()
+    let tmstmp = new Date().toLocaleTimeString([], {hour12: false, timeZone: 'America/New_York'});
+    console.log(tmstmp + " SETUP: rereg listeners: " + this.ethService.provider.connection.url)
+ }
+
 async close(mkt: Market) {
     try {
         await this.closePosition(mkt.wallet, mkt.baseToken, undefined,undefined,undefined)
@@ -320,7 +330,8 @@ async close(mkt: Market) {
         }
     catch (e: any) {
             console.error(`ERROR: FAILED CLOSE. Rotating endpoint: ${e.toString()}`)
-            this.ethService.rotateToNextEndpoint()
+            //this.ethService.rotateToNextEndpoint()
+            this.rotateToNextProvider()
             // one last try....
             await this.closePosition(mkt.wallet, mkt.baseToken, undefined,undefined,undefined)
             console.log("RECOVERY: closed after rotation")
@@ -413,7 +424,7 @@ async wakeUpCheck(mkt: Market): Promise<boolean> {
     if ( (mkt.side == Side.LONG) && (tickDelta > mkt.longEntryTickDelta) ) {
         // dont rely on active. probably should remove pay the price for a single read in lieu of gas wasted and complexity
         let pos = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
-        let sz = mkt.startCollateral * mkt.leverage
+        let sz = mkt.startCollateral / mkt.resetMargin
         try { 
             if(!pos) { 
                 await this.open(mkt,sz)
@@ -426,7 +437,7 @@ async wakeUpCheck(mkt: Market): Promise<boolean> {
     }
     else if ( (mkt.side == Side.SHORT) && (tickDelta < 0) && (Math.abs(tickDelta) > mkt.shortEntryTickDelta) ) {
         let pos = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
-        let sz = mkt.startCollateral * mkt.leverage
+        let sz = mkt.startCollateral / mkt.resetMargin
         try {
             if(!pos) {
                 await this.open(mkt,sz)
@@ -791,8 +802,34 @@ async legMaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
     }*/
     return check 
   }
+
+// FIXME: use the new way >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+async maxMaxMarginRatioCheck(market: Market) {
+    // current marginratio = collat+upnl/positionVal. note collat + upnl == basisCollateral
+    let pv = (await this.perpService.getTotalAbsPositionValue(market.wallet.address)).toNumber()
+    let tick = this.poolStateMap[market.tkr].tick
+    // skip if no position
+    if (pv == 0 || tick == 0) return
+    let mr = market.basisCollateral/pv
+    if (mr > market.maxMarginRatio ){
+    // compute additional size to bring down the margin ratio to reset value
+    // mr = (collatBasis)/positionValue=positionSize*price => positionSize = collatBasis/price*mr
+    
+    let price = Math.pow(1.0001, tick!)
+    let sz  = market.basisCollateral/price*market.resetMargin
+    // add to the position and recompute margin ratio
+    await this.open(market, sz*price)
+
+    pv = (await this.perpService.getTotalAbsPositionValue(market.wallet.address)).toNumber()
+    let newmr = market.basisCollateral/pv
+    let tmstmp = new Date().toLocaleTimeString([], {hour12: false, timeZone: 'America/New_York'});
+    console.log(tmstmp + " INFO: MARGIN RESET: " + "prev mr:" + mr + " new mr:" + newmr + " sz:" + sz)
+    }
+}
 //--------------------------------------------------------------------------------------
 //  mainRoutine
+// TODO: OPTIMIZE: batch all checks for all legs. can avoid unnecessary checks e.g if SHORT leg above threshold twin will not
 //--------------------------------------------------------------------------------------
   async checksRoutine(market: Market) {
     // check for TP_MAX_LOSS
@@ -805,6 +842,9 @@ async legMaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
             let unfav =  (this.holosSide == Direction.TORO ? Side.SHORT : Side.LONG)
             this.prematureSideClose(unfav)
     }
+    // MMR. maximum margin RESET check
+    await this.maxMaxMarginRatioCheck(market)
+    
     // selective wake up
     await this.wakeUpCheck(market) //wakeup only favored leg if sided mkt else both
   }

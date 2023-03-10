@@ -240,7 +240,7 @@ export class Arbitrageur extends BotService {
 
     async start(): Promise<void> {
         //TODO.BIZCONT renable rotation to do the health checks
-        //this.ethService.enableEndpointRotation()
+        this.ethService.enableEndpointRotation()
         this.arbitrageRoutine()
     }
 

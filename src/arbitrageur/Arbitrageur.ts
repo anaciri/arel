@@ -74,6 +74,7 @@ interface PoolState {
     poolAddr: string,
     tick: number | undefined,
     prevTick: number | undefined,
+    poolContract: UniswapV3Pool,
     //sqrtPriceX96: number, // 96 bits of precision. needed??
 }  
 
@@ -126,7 +127,7 @@ export class Arbitrageur extends BotService {
     private holosSide: Direction = Direction.ZEBRA
     private prevHolsSide: Direction = Direction.ZEBRA
     private poolStateMap: { [keys: string]: PoolState } = {}
-
+    //DBGpoolETHcontract: UniswapV3Pool
 
     async setup(): Promise<void> {
         this.log.jinfo({ event: "Setup",})
@@ -146,10 +147,37 @@ export class Arbitrageur extends BotService {
         this.createPoolStateMap()
         // setup listeners for all node endpoints
         //not needed coz on rotate it will reregister listeners
-       //for ( let i = 0; i < this.ethService.web3Endpoints.length; ++i )
+        //for ( let i = 0; i < this.ethService.web3Endpoints.length; ++i )
+   
         this.setupPoolListeners()
         await this.createMarketMap()
         
+    }
+
+    async DBG_setupPoolListeners(): Promise<void> {
+        /*
+        //for (const p of this.perpService.metadata.pools) {
+        for (const symb in this.poolStateMap) {
+            //const unipool = await this.perpService.createPool(this.poolStateMap[symb].poolAddr);
+            //let unipool = this.DBGpoolETHcontract
+            
+            
+            // setup Swap event handler
+            unipool.on('Swap', (sender: string, recipient: string, amount0: Big, amount1: Big, sqrtPriceX96: Big, liquidity: Big, tick: number, event: ethers.Event) => {
+                // update previous tick before overwriting
+                this.poolStateMap[symb].prevTick = this.poolStateMap[symb].tick
+                this.poolStateMap[symb].tick= tick
+                // convert ticks to price: price = 1.0001 ** tick
+                let price = 1.0001 ** tick
+
+                const epoch = Math.floor(Date.now() / 1000).toString();
+                // TURN OFF CONSOLE LOGGING. append to file
+                //console.log(`${epoch}, ${symb}, ${this.poolStateMap[symb].prevTick}, ${this.poolStateMap[symb].tick}, ${price.toFixed(4)}`);
+                const stream = fs.createWriteStream('ticks.csv', {flags:'a'} ); 
+                stream.write(`${epoch}, ${symb}, ${this.poolStateMap[symb].prevTick}, ${this.poolStateMap[symb].tick}, ${price.toFixed(4)}\n`);
+              });
+            }
+            */
     }
     // setup listeners for all pools
     // test event: 0xBd7a3B7DbEb096F0B832Cf467B94b091f30C34ec
@@ -165,7 +193,8 @@ export class Arbitrageur extends BotService {
     async setupPoolListeners(): Promise<void> {
         //for (const p of this.perpService.metadata.pools) {
         for (const symb in this.poolStateMap) {
-            const unipool = await this.perpService.createPool(this.poolStateMap[symb].poolAddr);
+            //const unipool = await this.perpService.createPool(this.poolStateMap[symb].poolAddr);
+            let unipool = this.poolStateMap[symb].poolContract
             // setup Swap event handler
             unipool.on('Swap', (sender: string, recipient: string, amount0: Big, amount1: Big, sqrtPriceX96: Big, liquidity: Big, tick: number, event: ethers.Event) => {
                 // update previous tick before overwriting
@@ -184,10 +213,12 @@ export class Arbitrageur extends BotService {
             }
     }
 
-     createPoolStateMap() {
+    createPoolStateMap() {
         for (const pool of this.perpService.metadata.pools) {
+            const poolContract = this.perpService.createPool(pool.address)
             this.poolStateMap[pool.baseSymbol] = { 
                 poolAddr: pool.address,
+                poolContract: poolContract,
                 tick:0,  // otherwise wakeup check will choke
                 prevTick: 0,
               };
@@ -855,26 +886,16 @@ async maxMaxMarginRatioCheck(market: Market) {
     }
 }
 //--------------------------------------------------------------------------------------
-// TODO: factor this check out of here
+// TODO: factor out this check from of here
 //--------------------------------------------------------------------------------------
 async ensureSwapListenersOK(): Promise<void> {
-    for (const symb in this.poolStateMap) {
-      const unipool = await this.perpService.createPool(this.poolStateMap[symb].poolAddr);
-  
-      const swapListenerCount = await unipool.listenerCount('Swap');
-      //TOOD.OPTIMIZATION: if the first one is not installed, others very likely not installed either
-      if (swapListenerCount === 0) {
-        unipool.on('Swap', (sender: string, recipient: string, amount0: Big, amount1: Big, sqrtPriceX96: Big, liquidity: Big, tick: number, event: ethers.Event) => {
-            // update previous tick before overwriting
-            this.poolStateMap[symb].prevTick = this.poolStateMap[symb].tick
-            this.poolStateMap[symb].tick= tick
-            let price = 1.0001 ** tick
-            const epoch = Math.floor(Date.now() / 1000).toString();
-            const stream = fs.createWriteStream('ticks.csv', {flags:'a'} ); 
-            stream.write(`${epoch}, ${symb}, ${this.poolStateMap[symb].prevTick}, ${this.poolStateMap[symb].tick}, ${price.toFixed(4)}\n`);
-          });
-        console.log(`SETUP: Missing Swap. Adding listener for ${symb}`);    
-      }
+    // just need to check any one pool if the listener not there probably not for all and reinstall
+    // TODO. do also a check if csv has not been updated?
+    const testPool = this.poolStateMap['vSOL'].poolContract;
+    const swapListenerCount = await testPool.listenerCount('Swap');
+    if (swapListenerCount === 0) {
+        this.setupPoolListeners();
+        console.log('INFO: Swap listeners reinstalled');
     }
   }
   
@@ -883,7 +904,7 @@ async ensureSwapListenersOK(): Promise<void> {
 //--------------------------------------------------------------------------------------
   async checksRoutine(market: Market) {
     //TODO.BIZCONT redo ensureSwapListenersOK, it will always return listerneCounter of zero coz new instance
-    //await this.ensureSwapListenersOK()
+    await this.ensureSwapListenersOK()
     // check for TP_MAX_LOSS
     if ( await this.legMaxLossCheckAndStateUpd(market) ) {   // have a positive => close took place. check for qrom crossing
         this.putMktToSleep(market)

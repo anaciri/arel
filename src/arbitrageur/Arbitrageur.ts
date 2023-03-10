@@ -361,7 +361,8 @@ genTWreport() {
     // open a file for writing  
     let twrstrm = fs.createWriteStream('twreport.csv');
     // write headerr
-    twrstrm.write(`name, startCollat, endCollat, isSettled\n`);
+    twrstrm.
+    write(`name, startCollat, endCollat, isSettled\n`);
     // write data
 //    Object.values(this.marketMap).forEach(m => {
     for(const m of Object.values(this.marketMap)) {
@@ -411,17 +412,36 @@ async wakeUpCheck(mkt: Market): Promise<boolean> {
     let tickDelta = 0
     let pool = this.poolStateMap[mkt.tkr]
    
-    try {
-        if (pool.prevTick == 0) {
-            return false
-        }
+    try { // if !prevTick, this is the first tick. cant compute delta
+        if (pool.prevTick == 0) { return false }
         tickDelta = pool.tick! - pool.prevTick!
-    }
-    catch(err) { console.error("ERROR: prevTick undefined for " + mkt.tkr) }
+    } catch(err) { console.error("ERROR: prevTick undefined for " + mkt.tkr) }
 
+    // guess mkt direction using btc-eth as a proxy. if dont have prvTick for either, cant guess direction
+    if (this.poolStateMap["vETH"].prevTick == 0 || this.poolStateMap["vBTC"].prevTick == 0) { return false }
+
+    let ethd = this.poolStateMap["vETH"].tick!-this.poolStateMap["vETH"].prevTick!
+    let btcd = this.poolStateMap["vBTC"].tick!-this.poolStateMap["vBTC"].prevTick!
+    // if ethd and btcd dont have the same sign, no guess exit
+    if (ethd * btcd < 0) { return false }
+
+    let dir: Direction = Direction.ZEBRA
+   // if both deltas are positive and each > TP_DIR_MIN_TICK_DELTA return TORO
+    if ( (ethd > 0) && (btcd > 0) && (ethd > config.TP_DIR_MIN_TICK_DELTA) && (btcd > config.TP_DIR_MIN_TICK_DELTA) ) {
+        dir = Direction.TORO
+        let tmstmp = new Date().toLocaleTimeString("en-US", {timeZone: "America/New_York", hour12: false});
+        console.log(tmstmp + ": INFO: ethbit Dticks: " + ethd + ", " + btcd)
+    }
+    // if both are negative and absolute value of each > TP_MIN_TICK_DELTA then BEAR
+    else if ( (ethd < 0) && (btcd < 0) && (Math.abs(ethd) > config.TP_DIR_MIN_TICK_DELTA)
+                                       && (Math.abs(btcd) > config.TP_DIR_MIN_TICK_DELTA) ) {
+        dir = Direction.BEAR
+        let tmstmp = new Date().toLocaleTimeString("en-US", {timeZone: "America/New_York", hour12: false});
+        console.log(tmstmp + ": INFO: ethbit Dticks: " + ethd + ", " + btcd)
+ 
+    }
     // wake up long/short on tick inc
-    if ( (mkt.side == Side.LONG) && (tickDelta > mkt.longEntryTickDelta) ) {
-        // dont rely on active. probably should remove pay the price for a single read in lieu of gas wasted and complexity
+    if ( (mkt.side == Side.LONG) && (tickDelta > mkt.longEntryTickDelta) && (dir == Direction.TORO) ) {
         let pos = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
         let sz = mkt.startCollateral / mkt.resetMargin
         try { 
@@ -434,7 +454,8 @@ async wakeUpCheck(mkt: Market): Promise<boolean> {
         }
         catch(err) { console.error("OPEN FAILED in wakeUpCheck") }
     }
-    else if ( (mkt.side == Side.SHORT) && (tickDelta < 0) && (Math.abs(tickDelta) > mkt.shortEntryTickDelta) ) {
+    else if ( (mkt.side == Side.SHORT) && (tickDelta < 0) && (Math.abs(tickDelta) > mkt.shortEntryTickDelta) 
+                                       && (dir == Direction.BEAR)) {
         let pos = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
         let sz = mkt.startCollateral / mkt.resetMargin
         try {

@@ -15,6 +15,8 @@ import { Service } from "typedi"
 import config from "../configs/config.json"
 import * as fs from 'fs'
 import { tmpdir } from "os"
+import { timeStamp } from "console"
+import { Interface } from "readline"
 //import { IUniswapV3PoolEvents } from "@perp/IUniswapV3PoolEvents";
 
 require('dotenv').config();
@@ -30,6 +32,24 @@ enum Direction {
     TORO = "toro",
     BEAR = "bear"
 }
+
+type TickRecord = {
+    timestamp: number
+    tickDelta: number | null
+  };
+
+type CumulativeTick = {
+    lastTimestamp: number;
+    cumTick: number;
+  };
+
+interface PoolData {
+    lastRecord: TickRecord 
+    tickBuff: TickRecord[] //timestamp, tick raw
+    currTickDelta: number, //latest delta computed by updatePoolData
+    prevTickDelta: number, //previou delta saved by updatePoolData
+    isRead: boolean
+}  
 
 const BEAR = Side.SHORT
 const BULL = Side.LONG
@@ -126,11 +146,13 @@ export class Arbitrageur extends BotService {
     private readonly arbitrageMaxGasFeeEth = Big(config.ARBITRAGE_MAX_GAS_FEE_ETH)
     private holosSide: Direction = Direction.ZEBRA
     private prevHolsSide: Direction = Direction.ZEBRA
-    private poolStateMap: { [keys: string]: PoolState } = {}
+    private poolState: { [keys: string]: PoolState } = {}
+    private poolData: { [ticker: string]: PoolData } = {}
+
     //DBGpoolETHcontract: UniswapV3Pool
 
     async setup(): Promise<void> {
-        this.log.jinfo({ event: "Setup",})
+        this.log.jinfo({ event: "Setup ONE.D",})
        // Print the names and values of all the variables that match the pattern 'v[A-Z]{3,}'
         const pattern = /^v[A-Z]{3,}/  
         let vk = Object.entries(process.env).filter(([k])=> pattern.test(k))
@@ -145,6 +167,7 @@ export class Arbitrageur extends BotService {
         await this.createNonceMutex([...wlts.values()])
         
         this.createPoolStateMap()
+        this.createPoolDataMap()
         // setup listeners for all node endpoints
         //not needed coz on rotate it will reregister listeners
         //for ( let i = 0; i < this.ethService.web3Endpoints.length; ++i )
@@ -190,16 +213,16 @@ export class Arbitrageur extends BotService {
     /// @param liquidity The liquidity of the pool after the swap
     /// @param tick The log base 1.0001 of price of the pool after the swap
 
-    async setupPoolListeners(): Promise<void> {
+    async BKPsetupPoolListeners(): Promise<void> {
         //for (const p of this.perpService.metadata.pools) {
-        for (const symb in this.poolStateMap) {
+        for (const symb in this.poolState) {
             //const unipool = await this.perpService.createPool(this.poolStateMap[symb].poolAddr);
-            let unipool = this.poolStateMap[symb].poolContract
+            let unipool = this.poolState[symb].poolContract
             // setup Swap event handler
             unipool.on('Swap', (sender: string, recipient: string, amount0: Big, amount1: Big, sqrtPriceX96: Big, liquidity: Big, tick: number, event: ethers.Event) => {
                 // update previous tick before overwriting
-                this.poolStateMap[symb].prevTick = this.poolStateMap[symb].tick
-                this.poolStateMap[symb].tick= tick
+                this.poolState[symb].prevTick = this.poolState[symb].tick
+                this.poolState[symb].tick= tick
                 // convert ticks to price: price = 1.0001 ** tick
                 let price = 1.0001 ** tick
 
@@ -207,16 +230,41 @@ export class Arbitrageur extends BotService {
                 // TURN OFF CONSOLE LOGGING. append to file
                 //console.log(`${epoch}, ${symb}, ${this.poolStateMap[symb].prevTick}, ${this.poolStateMap[symb].tick}, ${price.toFixed(4)}`);
                 const stream = fs.createWriteStream('ticks.csv', {flags:'a'} ); 
-                stream.write(`${epoch}, ${symb}, ${this.poolStateMap[symb].prevTick}, ${this.poolStateMap[symb].tick}, ${price.toFixed(4)}\n`);
+                stream.write(`${epoch}, ${symb}, ${this.poolState[symb].prevTick}, ${this.poolState[symb].tick}, ${price.toFixed(4)}\n`);
               });
-
             }
+    }
+    //--------------------------------------------------------------------------------
+    // setup listeners for all pools
+    // responsable to update the poolData.tickLog used in updatePoolData to compute the cumulative tick changes
+    //--------------------------------------------------------------------------------
+    async setupPoolListeners(): Promise<void> {
+        //for (const p of this.perpService.metadata.pools) {
+        for (const symb in this.poolState) {
+            //const unipool = await this.perpService.createPool(this.poolStateMap[symb].poolAddr);
+            let unipool = this.poolState[symb].poolContract
+            // setup Swap event handler
+            unipool.on('Swap', (sender: string, recipient: string, amount0: Big, amount1: Big, sqrtPriceX96: Big, 
+                                liquidity: Big, tick: number, event: ethers.Event) =>
+                        { // poolDataupdate will drain tickLog
+                            const timestamp = Math.floor(Date.now())
+                            this.poolData[symb].tickBuff.push({ timestamp: timestamp, tickDelta: tick})
+                            //this.poolData[symb].lastTick = tick
+                            // if data has been read then empty tickLog
+                            //>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                            if (this.poolData[symb].isRead == true) {
+                                this.poolData[symb].tickBuff.splice(0, this.poolData[symb].tickBuff.length - 1);
+                                this.poolData[symb].isRead = false
+                            }
+
+                        })
+        }   
     }
 
     createPoolStateMap() {
         for (const pool of this.perpService.metadata.pools) {
             const poolContract = this.perpService.createPool(pool.address)
-            this.poolStateMap[pool.baseSymbol] = { 
+            this.poolState[pool.baseSymbol] = { 
                 poolAddr: pool.address,
                 poolContract: poolContract,
                 tick:0,  // otherwise wakeup check will choke
@@ -225,6 +273,18 @@ export class Arbitrageur extends BotService {
         }
     }
 
+    // init PoolData for all pools
+    createPoolDataMap() {
+        for (const pool of this.perpService.metadata.pools) {
+          this.poolData[pool.baseSymbol] = { 
+            lastRecord: {tickDelta: 0, timestamp: 0},
+            tickBuff: [],
+            prevTickDelta: 0,
+            currTickDelta: 0,
+            isRead: false,
+          };
+        }
+      }
 
    async createMarketMap() {
         const poolMap: { [keys: string]: any } = {}
@@ -296,8 +356,89 @@ export class Arbitrageur extends BotService {
     }
 
     
- // TODO move to butil file
+//------------------
+// updatePoolData() accumulates tick changes for a given TP_TICK_TIME_INTERVAL, needed to gestimate if there is unidirection
  //------------------
+
+ updatePoolData(): void {
+ for (const symb in this.poolState) {   
+    //let poolData  = this.poolData[symb]
+    if (this.poolData[symb].tickBuff.length == 0) { continue }
+    //const lastUpdate = poolData.lastTick // last tick update for this ticker
+    // drain tickLog into ticks
+    //const tsticks = [...this.poolData[symb].tickLog]
+     // take the difference btw last and first in tickLog  
+    //const tickDelta = tsticks[tsticks.length-1].tick! - tsticks[0].tick!
+    if (this.poolData[symb].tickBuff.length == 0) { 
+        console.log(symb + " DEBUG: should not be here" + this.poolData[symb].lastRecord?.tickDelta)
+        //victim of race condition. skip and see if next round will work
+        continue
+    }
+    // get tick delta from the tickBuff. Diff btw last and first in the buffer
+    const len = this.poolData[symb].tickBuff.length
+    const tickDelta = this.poolData[symb].tickBuff[len-1].tickDelta! - this.poolData[symb].tickBuff[0].tickDelta!
+    // set flag to let handler to reset tickLog
+    
+    // weird behavior if i just nuke the array. instead pop all except last item
+    //this.poolData[symb].tickLog = []
+    //while (this.poolData[symb].tickLog.length) { this.poolData[symb].tickLog.pop()}
+      
+    this.poolData[symb].lastRecord.tickDelta = tickDelta
+    this.poolData[symb].lastRecord.timestamp = Date.now()
+    //TODO.DEBT HACK work aournd the race condition. wrap in a setter/getter with mutex
+    // flag handler that ok to discard current buffer and start a new one (or throw old entries)
+    this.poolData[symb].isRead = true
+
+    //this.poolData[symb].prevTickDelta = this.poolData[symb].currTickDelta
+    this.poolData[symb].currTickDelta = tickDelta
+
+    const csvString = `${symb},${Date.now()},${tickDelta}\n`;
+    console.log(csvString)
+    fs.appendFile('cumticklog.csv', csvString, (err) => { if (err) throw err });
+    //TODO.DEBT need to handle this file resource
+    // getting race condition
+    
+
+    /*const csvString = `${symb},${cumTick.lastTimestamp},${cumTick.cumTick}\n`;
+fs.appendFile('cumticklog.csv', csvString, (err) => {
+  if (err) throw err;
+  console.log(`Wrote entry to cumticklog.csv: ${csvString}`);
+});
+    const cumTick: CumulativeTick = msticks.reduce((acc, val) =>
+     {
+        return { lastTimestamp: Date.now(), cumTick: acc.cumTick + (val.tick ?? 0) };
+        }, {lastTimestamp: 0, cumTick: 0});
+
+    
+    const deltaTicks = poolData.tickDeltaHist;
+  
+    // Calculate the start and end timestamps for the time interval
+    const startTime = lastUpdate
+    // if we got here, there is at least one tick in the log with a timestamp
+    const endTime = lastUpdate! + 1000*config.TP_TICK_TIME_INTERVAL_SEC;
+  
+    // Find the index of the first tick that's after the start time
+    let firstIndex = tickLog.findIndex((tk) => tk.timestamp >= startTime!);
+//    let firstIndex = tickLog.findIndex((tk) => tk.timestamp > startTime!);
+  
+    // If there are no ticks after the start time, or empty, skip
+    if (firstIndex === -1 || tickLog.length == 0 ) { continue }
+  
+    // Calculate the cumulative tick for the time interval
+    let cumTick = 0;
+    let i = firstIndex;
+    while (i < tickLog.length && tickLog[i].timestamp < endTime) {
+      cumTick += tickLog[i].tick!;
+     i++;
+    }
+    deltaTicks.push({ lastTimestamp: endTime, cumTick: cumTick})
+    // Update the lastUpdate timestamp
+    this.poolData[symb].lastTickUpdate = endTime
+     */
+ }
+
+}
+
 
  async getPosVal(leg: Market): Promise<Number> {
     let pv =  (await this.perpService.getTotalPositionValue(leg.wallet.address, leg.baseToken)).toNumber()
@@ -311,6 +452,10 @@ export class Arbitrageur extends BotService {
  }
 
  async open(mkt: Market, usdAmount: number ) {
+    if (config.DEBUG_FLAG) {
+        console.log("DEBUG: open: " + mkt.name + " " + usdAmount)
+        return
+    }
     try {
         await this.openPosition(mkt.wallet, mkt.baseToken ,mkt.side ,AmountType.QUOTE,Big(usdAmount),undefined,undefined,undefined)
             // no garanteed that collateral basis/start were updated on the assumed previous close
@@ -350,7 +495,7 @@ export class Arbitrageur extends BotService {
     console.log(tmstmp + " SETUP: rereg listeners: " + this.ethService.provider.connection.url)
  }
 
-async close(mkt: Market) {
+async BKPclose(mkt: Market) {
     try {
         await this.closePosition(mkt.wallet, mkt.baseToken, undefined,undefined,undefined)
         //bookeeping: upd startCollateral to settled and save old one in basisCollateral
@@ -368,6 +513,31 @@ async close(mkt: Market) {
             throw e  
     }
  }
+
+ async close(mkt: Market) {
+    if (config.DEBUG_FLAG) {
+        console.log("DEBUG: close: " + mkt.name)
+        return
+    }
+    try {
+        await this.closePosition(mkt.wallet, mkt.baseToken, undefined,undefined,undefined)
+        //bookeeping: upd startCollateral to settled and save old one in basisCollateral
+        let scoll = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
+        mkt.basisCollateral = scoll
+        mkt.startCollateral = scoll
+        }
+    catch (e: any) {
+            console.error(`ERROR: FAILED CLOSE. Rotating endpoint: ${e.toString()}`)
+            //this.ethService.rotateToNextEndpoint()
+            this.rotateToNextProvider()
+            // one last try....
+            await this.closePosition(mkt.wallet, mkt.baseToken, undefined,undefined,undefined)
+            console.log("RECOVERY: closed after rotation")
+            throw e  
+    }
+ }
+
+
 // simpler override for close
 async closeMkt( mktName: string) {
     let mkt = this.marketMap[mktName]
@@ -436,42 +606,88 @@ async rollEndTest(market: Market): Promise<boolean> {
     return check
 }
 //----------------------------------
+// mktDirection
+//----------------------------------
+BKPDirectionChangeCheck():  boolean {
+   // guesstimate mkt direction using btc-eth as a proxy. if dont have prvTick for either, cant guess direction
+   if (this.poolState["vETH"].prevTick == 0 || this.poolState["vBTC"].prevTick == 0) { return false }
+
+   let ethd = this.poolState["vETH"].tick!-this.poolState["vETH"].prevTick!
+   let btcd = this.poolState["vBTC"].tick!-this.poolState["vBTC"].prevTick!
+   // if ethd and btcd dont have the same sign, no guess exit
+   if (ethd * btcd < 0) { return false }
+
+   //let dir: Direction = Direction.ZEBRA
+   let dir = this.holosSide
+  // if both deltas are positive and each > TP_DIR_MIN_TICK_DELTA return TORO
+   if ( (ethd > 0) && (btcd > 0) && (ethd > config.TP_DIR_MIN_TICK_DELTA) && (btcd > config.TP_DIR_MIN_TICK_DELTA) ) {
+       this.prevHolsSide = this.holosSide
+       this.holosSide = Direction.TORO
+       let tmstmp = new Date().toLocaleTimeString("en-US", {timeZone: "America/New_York", hour12: false});
+       console.log(tmstmp + ": INFO: ethbit Dticks: " + ethd + ", " + btcd)
+       return true
+   }
+   // if both are negative and absolute value of each > TP_MIN_TICK_DELTA then BEAR
+   else if ( (ethd < 0) && (btcd < 0) && (Math.abs(ethd) > config.TP_DIR_MIN_TICK_DELTA)
+                                      && (Math.abs(btcd) > config.TP_DIR_MIN_TICK_DELTA) ) {
+       this.prevHolsSide = this.holosSide
+       this.holosSide = Direction.BEAR
+       let tmstmp = new Date().toLocaleTimeString("en-US", {timeZone: "America/New_York", hour12: false});
+       console.log(tmstmp + ": INFO: ethbit Dticks: " + ethd + ", " + btcd)
+       return true
+   }
+   return false
+}
+
+// determine from beth mkt direction. input poolData from updatePoolData 
+// cmp unpacking date to current cycle for both to det if this data
+mktDirectionChangeCheck():  boolean {
+    // wait until vETH and vBTC have data. usint timestamp as flag
+    if (!this.poolData["vETH"].lastRecord.timestamp || !this.poolData["vBTC"].lastRecord.timestamp) { return false }
+    // time thres to determine if old. if not from this past cycle, exit
+    let tthres = Date.now() - config.PRICE_CHECK_INTERVAL_SEC*1000
+    if (this.poolData["vETH"].lastRecord.timestamp < tthres || this.poolData["vBTC"].lastRecord.timestamp < tthres) { return false }
+    // if delta not same direction, exit
+    let ethDelta = this.poolData["vETH"].currTickDelta
+    let btchDelta = this.poolData["vBTC"].currTickDelta
+    // both proxis must move in same direction for us to care
+    if(ethDelta * btchDelta <= 0) { return false }
+
+    // guesstimate direct   
+   let dir = this.holosSide
+  // if both deltas are positive and each > TP_DIR_MIN_TICK_DELTA return TORO
+   if ( (ethDelta > 0) && (btchDelta > 0) && (ethDelta > config.TP_DIR_MIN_TICK_DELTA) 
+                       && (btchDelta > config.TP_DIR_MIN_TICK_DELTA) ) {
+       this.prevHolsSide = this.holosSide
+       this.holosSide = Direction.TORO
+       let tmstmp = new Date().toLocaleTimeString("en-US", {timeZone: "America/New_York", hour12: false});
+       console.log(tmstmp + ": INFO: ethbit Dticks: " + ethDelta + ", " + btchDelta)
+       return true
+   }
+   // if both are negative and absolute value of each > TP_MIN_TICK_DELTA then BEAR
+   else if ( (ethDelta < 0) && (btchDelta < 0) && (Math.abs(ethDelta) > config.TP_DIR_MIN_TICK_DELTA)
+                                      && (Math.abs(btchDelta) > config.TP_DIR_MIN_TICK_DELTA) ) {
+       this.prevHolsSide = this.holosSide
+       this.holosSide = Direction.BEAR
+       let tmstmp = new Date().toLocaleTimeString("en-US", {timeZone: "America/New_York", hour12: false});
+       console.log(tmstmp + ": INFO: ethbit Dticks: " + ethDelta + ", " + btchDelta)
+       return true
+   }
+   return false
+}
+//----------------------------------
 // wakeUpCheck
 //-----
 async wakeUpCheck(mkt: Market): Promise<boolean> { 
     // get the tick delta for this market 
     let tickDelta = 0
-    let pool = this.poolStateMap[mkt.tkr]
-   
-    try { // if !prevTick, this is the first tick. cant compute delta
-        if (pool.prevTick == 0) { return false }
-        tickDelta = pool.tick! - pool.prevTick!
-    } catch(err) { console.error("ERROR: prevTick undefined for " + mkt.tkr) }
+    //let pool = this.poolState[mkt.tkr]
+    let pooldata = this.poolData[mkt.tkr]
+    tickDelta = pooldata.currTickDelta - pooldata.prevTickDelta
+    if ( tickDelta == 0) { return false }
 
-    // guess mkt direction using btc-eth as a proxy. if dont have prvTick for either, cant guess direction
-    if (this.poolStateMap["vETH"].prevTick == 0 || this.poolStateMap["vBTC"].prevTick == 0) { return false }
-
-    let ethd = this.poolStateMap["vETH"].tick!-this.poolStateMap["vETH"].prevTick!
-    let btcd = this.poolStateMap["vBTC"].tick!-this.poolStateMap["vBTC"].prevTick!
-    // if ethd and btcd dont have the same sign, no guess exit
-    if (ethd * btcd < 0) { return false }
-
-    let dir: Direction = Direction.ZEBRA
-   // if both deltas are positive and each > TP_DIR_MIN_TICK_DELTA return TORO
-    if ( (ethd > 0) && (btcd > 0) && (ethd > config.TP_DIR_MIN_TICK_DELTA) && (btcd > config.TP_DIR_MIN_TICK_DELTA) ) {
-        dir = Direction.TORO
-        let tmstmp = new Date().toLocaleTimeString("en-US", {timeZone: "America/New_York", hour12: false});
-        console.log(tmstmp + ": INFO: ethbit Dticks: " + ethd + ", " + btcd)
-    }
-    // if both are negative and absolute value of each > TP_MIN_TICK_DELTA then BEAR
-    else if ( (ethd < 0) && (btcd < 0) && (Math.abs(ethd) > config.TP_DIR_MIN_TICK_DELTA)
-                                       && (Math.abs(btcd) > config.TP_DIR_MIN_TICK_DELTA) ) {
-        dir = Direction.BEAR
-        let tmstmp = new Date().toLocaleTimeString("en-US", {timeZone: "America/New_York", hour12: false});
-        console.log(tmstmp + ": INFO: ethbit Dticks: " + ethd + ", " + btcd)
- 
-    }
-    // wake up long/short on tick inc
+  // wake up long/short on tick inc
+    let dir = this.holosSide
     if ( (mkt.side == Side.LONG) && (tickDelta > mkt.longEntryTickDelta) && (dir == Direction.TORO) ) {
         let pos = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
         let sz = mkt.startCollateral / mkt.resetMargin
@@ -813,7 +1029,7 @@ async putMktToSleep(mkt: Market) {
 
 async holosCheck() :Promise<boolean> {
 // compute poolState tick changes segragating positive vs negative
-this.poolStateMap
+this.poolState
 
     return false
 }
@@ -859,7 +1075,7 @@ async legMaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
 async maxMaxMarginRatioCheck(market: Market) {
     // current marginratio = collat+upnl/positionVal. note collat + upnl == basisCollateral
     let pv = (await this.perpService.getTotalAbsPositionValue(market.wallet.address)).toNumber()
-    let tick = this.poolStateMap[market.tkr].tick
+    let tick = this.poolState[market.tkr].tick
     // skip if no position
     if (pv == 0 || tick == 0) return
     let mr = market.basisCollateral/pv
@@ -891,7 +1107,7 @@ async maxMaxMarginRatioCheck(market: Market) {
 async ensureSwapListenersOK(): Promise<void> {
     // just need to check any one pool if the listener not there probably not for all and reinstall
     // TODO. do also a check if csv has not been updated?
-    const testPool = this.poolStateMap['vSOL'].poolContract;
+    const testPool = this.poolState['vSOL'].poolContract;
     const swapListenerCount = await testPool.listenerCount('Swap');
     if (swapListenerCount === 0) {
         this.setupPoolListeners();
@@ -905,16 +1121,22 @@ async ensureSwapListenersOK(): Promise<void> {
   async checksRoutine(market: Market) {
     //TODO.BIZCONT redo ensureSwapListenersOK, it will always return listerneCounter of zero coz new instance
     await this.ensureSwapListenersOK()
-    // check for TP_MAX_LOSS
+    // first things first.check for TP_MAX_LOSS
     if ( await this.legMaxLossCheckAndStateUpd(market) ) {   // have a positive => close took place. check for qrom crossing
         this.putMktToSleep(market)
     }
-    // holos close check
+    //updat pool data
+    this.updatePoolData()
+    this.mktDirectionChangeCheck()
+    // check for direciton. updates this.Direction
+    
+    /* holos close check
     if ( await this.holosDirectionChangeCheck() ) {   
             // unfav is shorts in a toro and longs in a bear
             let unfav =  (this.holosSide == Direction.TORO ? Side.SHORT : Side.LONG)
             this.prematureSideClose(unfav)
     }
+    */
     // MMR. maximum margin RESET check
     await this.maxMaxMarginRatioCheck(market)
     
@@ -925,7 +1147,7 @@ async ensureSwapListenersOK(): Promise<void> {
     // check if there is a direction change into a non-zebra beast
     async holosDirectionChangeCheck(): Promise<boolean> {
         // which pools have moved at least say 10 ticks to ignore noise
-        const minMoveList = Object.values(this.poolStateMap).filter(
+        const minMoveList = Object.values(this.poolState).filter(
             (pool) =>( Math.abs(pool.tick! - pool.prevTick!) > config.TP_QROM_ABS_TICK_SZ )
                       && (pool.prevTick!) != 0 )
             // segregate positive and negative moves
@@ -937,7 +1159,7 @@ async ensureSwapListenersOK(): Promise<void> {
           
           // update direction if meets threadhold
           let currDir
-          let count = Object.keys(this.poolStateMap).length
+          let count = Object.keys(this.poolState).length
           if ((posPools.length / count > config.TP_QRM_DIR_CHANGE_MIN_PCT)  && 
               (negPools.length / count < config.TP_QRM_DIR_CHANGE_MIN_PCT)) {
                 currDir = Direction.TORO;

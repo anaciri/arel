@@ -47,7 +47,7 @@ interface PoolData {
     lastRecord: TickRecord 
     tickBuff: TickRecord[] //timestamp, tick raw
     currTickDelta: number, //latest delta computed by updatePoolData
-    prevTickDelta: number, //previou delta saved by updatePoolData
+    //prevTickDelta: number, //previou delta saved by updatePoolData
     isRead: boolean
 }  
 
@@ -279,7 +279,7 @@ export class Arbitrageur extends BotService {
           this.poolData[pool.baseSymbol] = { 
             lastRecord: {tickDelta: 0, timestamp: 0},
             tickBuff: [],
-            prevTickDelta: 0,
+//            prevTickDelta: 0,
             currTickDelta: 0,
             isRead: false,
           };
@@ -573,9 +573,7 @@ BKPenTWreport() {
     twrstrm.end()
  }
 
- 
-
- genTWreport() {
+  genTWreport() {
     const writeStream = fs.createWriteStream('twreport.csv');
     writeStream.write(`name, startCollat, endCollat, isSettled\n`);
   
@@ -669,34 +667,50 @@ BKPDirectionChangeCheck():  boolean {
 // cmp unpacking date to current cycle for both to det if this data
 mktDirectionChangeCheck():  boolean {
     // wait until vETH and vBTC have data. usint timestamp as flag
-    if (!this.poolData["vETH"].lastRecord.timestamp || !this.poolData["vBTC"].lastRecord.timestamp) { return false }
-    // time thres to determine if old. if not from this past cycle, exit
-    let tthres = Date.now() - config.PRICE_CHECK_INTERVAL_SEC*1000
-    if (this.poolData["vETH"].lastRecord.timestamp < tthres || this.poolData["vBTC"].lastRecord.timestamp < tthres) { return false }
-    // if delta not same direction, exit
-    let ethDelta = this.poolData["vETH"].currTickDelta
-    let btchDelta = this.poolData["vBTC"].currTickDelta
-    // both proxis must move in same direction for us to care
-    if(ethDelta * btchDelta <= 0) { return false }
+    if (!this.poolData["vETH"].lastRecord.timestamp || 
+        !this.poolData["vBTC"].lastRecord.timestamp || 
+        !this.poolData["vBNB"].lastRecord.timestamp ) { return false }
 
-    // guesstimate direct   
-   let dir = this.holosSide
-  // if both deltas are positive and each > TP_DIR_MIN_TICK_DELTA return TORO
-   if ( (ethDelta > 0) && (btchDelta > 0) && (ethDelta > config.TP_DIR_MIN_TICK_DELTA) 
-                       && (btchDelta > config.TP_DIR_MIN_TICK_DELTA) ) {
+    // check if this is new data from past cycle, exit
+    let tthres = Date.now() - config.PRICE_CHECK_INTERVAL_SEC*1000
+    if (this.poolData["vETH"].lastRecord.timestamp < tthres || 
+        this.poolData["vBTC"].lastRecord.timestamp < tthres ||
+        this.poolData["vBNB"].lastRecord.timestamp < tthres ) { return false }  
+
+    // if delta not same direction, ie no agreement on direction. exit
+    let ethDelta = this.poolData["vETH"].currTickDelta
+    let btcDelta = this.poolData["vBTC"].currTickDelta
+    let bnbDelta = this.poolData["vBNB"].currTickDelta
+
+    const allPoitive = ethDelta > 0 && btcDelta > 0 && bnbDelta > 0;
+    const allNegative = ethDelta < 0 && btcDelta < 0 && bnbDelta < 0;
+
+    // all must be in agreement
+    if( !(allPoitive || allNegative) ) { return false }
+
+    // zebra until proven different  
+   this.holosSide = Direction.ZEBRA
+  // check if the change is > TP_DIR_MIN_TICK_DELTA in either direction
+  if (allPoitive && (ethDelta > config.TP_DIR_MIN_TICK_DELTA) && 
+                    (btcDelta > config.TP_DIR_MIN_TICK_DELTA) && 
+                    (bnbDelta > config.TP_DIR_MIN_TICK_DELTA) ) {
+       //if ( (ethDelta > 0) && (btcDelta > 0) && (ethDelta > config.TP_DIR_MIN_TICK_DELTA) && (btcDelta > config.TP_DIR_MIN_TICK_DELTA) ) {
        this.prevHolsSide = this.holosSide
        this.holosSide = Direction.TORO
+
        let tmstmp = new Date().toLocaleTimeString("en-US", {timeZone: "America/New_York", hour12: false});
-       console.log(tmstmp + ": INFO: ethbit Dticks: " + ethDelta + ", " + btchDelta)
+       console.log(tmstmp + ": INFO: bethnb Dticks: " + btcDelta +  ", " + ethDelta + ", " + bnbDelta)
        return true
    }
-   // if both are negative and absolute value of each > TP_MIN_TICK_DELTA then BEAR
-   else if ( (ethDelta < 0) && (btchDelta < 0) && (Math.abs(ethDelta) > config.TP_DIR_MIN_TICK_DELTA)
-                                      && (Math.abs(btchDelta) > config.TP_DIR_MIN_TICK_DELTA) ) {
+   // if all are negative and absolute value of each > TP_MIN_TICK_DELTA then BEAR
+   if ( allNegative && (Math.abs(ethDelta) > config.TP_DIR_MIN_TICK_DELTA) && 
+                       (Math.abs(btcDelta) > config.TP_DIR_MIN_TICK_DELTA) && 
+                       (Math.abs(bnbDelta) > config.TP_DIR_MIN_TICK_DELTA) ) {
        this.prevHolsSide = this.holosSide
        this.holosSide = Direction.BEAR
+
        let tmstmp = new Date().toLocaleTimeString("en-US", {timeZone: "America/New_York", hour12: false});
-       console.log(tmstmp + ": INFO: ethbit Dticks: " + ethDelta + ", " + btchDelta)
+       console.log(tmstmp + ": INFO: bethnb Dticks: " + btcDelta +  ", " + ethDelta + ", " + bnbDelta)
        return true
    }
    return false
@@ -706,10 +720,8 @@ mktDirectionChangeCheck():  boolean {
 //-----
 async wakeUpCheck(mkt: Market): Promise<boolean> { 
     // get the tick delta for this market 
-    let tickDelta = 0
-    //let pool = this.poolState[mkt.tkr]
-    let pooldata = this.poolData[mkt.tkr]
-    tickDelta = pooldata.currTickDelta - pooldata.prevTickDelta
+    //let tickDelta = 0
+    let tickDelta = this.poolData[mkt.tkr].currTickDelta
     if ( tickDelta == 0) { return false }
 
   // wake up long/short on tick inc
@@ -727,7 +739,8 @@ async wakeUpCheck(mkt: Market): Promise<boolean> {
         }
         catch(err) { console.error("OPEN FAILED in wakeUpCheck") }
     }
-    else if ( (mkt.side == Side.SHORT) && (tickDelta < 0) && (Math.abs(tickDelta) > mkt.shortEntryTickDelta) 
+    else if ( (mkt.side == Side.SHORT) && (tickDelta < 0)
+                                       && (Math.abs(tickDelta) > mkt.shortEntryTickDelta) 
                                        && (dir == Direction.BEAR)) {
         let pos = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
         let sz = mkt.startCollateral / mkt.resetMargin

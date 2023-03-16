@@ -555,7 +555,7 @@ async closeMkt( mktName: string) {
  } 
 
 // report to run onProcessExit
-genTWreport() {
+BKPenTWreport() {
     for (const m in this.marketMap) {
         let mkt = this.marketMap[m]
     }
@@ -571,8 +571,34 @@ genTWreport() {
         twrstrm.write(`${m.name}, ${m.initCollateral}, ${m.basisCollateral}, ${isSettled}\n`)
     }
     twrstrm.end()
-    twrstrm.close()
  }
+
+ 
+
+ genTWreport() {
+    const writeStream = fs.createWriteStream('twreport.csv');
+    writeStream.write(`name, startCollat, endCollat, isSettled\n`);
+  
+    for (const m of Object.values(this.marketMap)) {
+      const isSettled = m.startCollateral === m.basisCollateral ? "true" : "false";
+      writeStream.write(`${m.name}, ${m.startCollateral}, ${m.basisCollateral}, ${isSettled}\n`);
+    }
+  
+    writeStream.on('finish', () => {
+      console.log('Report written successfully.');
+      process.exit(0);
+    });
+  
+    writeStream.on('error', (err) => {
+      console.error(`Failed to write report: ${err}`);
+      process.exit(1);
+    });
+  
+    writeStream.end();
+  }
+  
+ 
+
 //----------------------------------
 //maxCumLossCheck(mkt: Market): Result<number> { return {value: null } }
 // DESCRPT test if a batok (base token) had ended roll and computes TW stats

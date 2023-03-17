@@ -128,7 +128,6 @@ interface Market {
     maxPnl: number
 // TODO.RMV
 orderAmount: Big
-
 }
 
 const DUST_USD_SIZE = Big(100)
@@ -446,7 +445,7 @@ fs.appendFile('cumticklog.csv', csvString, (err) => {
  }
 
 
- async nonZeroPos(leg: Market): Promise<boolean> {
+ async isNonZeroPos(leg: Market): Promise<boolean> {
     let pos = (await this.perpService.getTotalPositionValue(leg.wallet.address, leg.baseToken)).toNumber()
     return (pos != 0)
  }
@@ -957,44 +956,59 @@ async putWrongSideToSleep() : Promise<Result<boolean>> {
 }
 */
 
+// called after maxloss completed. 
+async solidarityKill(unfavSide: Side) {
+    // filter nonzero position in unfavSide
+    let deathrow: Market[] = []
+    for (const m of Object.values(this.marketMap)) {
+      let pos = await this.getPosVal(m)
+      if (pos !== 0 && m.side === unfavSide) { deathrow.push(m) }
+    }
+    // clemency for good performers
+    let pardonned = Object.values(deathrow)
+                          .filter((n) => n.basisCollateral / n.startCollateral > config.TP_MIN_PARDON_RATIO )
+    // cull the undesirebles
+    let toExecute = deathrow.filter( (n) => !pardonned.includes(n) )
+    if (toExecute.length) {
+        for (const m of deathrow ) {
+            try { await this.close(m) }
+            catch { "QRM.Close failed:" + m.name }
+        }
+    }
+}
+
+/*
 async prematureSideClose(unfavSide: Side) {
     // group markets by side using position value (pos < 0 is short, 0 is inactive)
     // only the undead can go to sleep
-
     let nonzeroPos: Market[] = []
     for (const m of Object.values(this.marketMap)) {
         let pos = await this.getPosVal(m)
-        if (pos != 0) {
-            nonzeroPos.push(m)
-        }
+        if (pos != 0) { nonzeroPos.push(m) }
     }
     //let nonzeroPos = Object.values(this.marketMap).filter(async m => (await this.getPosVal(m) >  0) || (await this.getPosVal(m) >  0)).map( m => m.name)
     
     // groupby long/short gangs among the actives
+    // TODO. simplify now we have item.side no need tp parse name
     const longShortGang = nonzeroPos.reduce<{ sgang: Market[], lgang: Market[] }>
-                    ((grps, item) => { item.name.endsWith("SHORT") ? grps.sgang.push(item) : grps.lgang.push(item);
-                                      return grps; }, 
-                                      { sgang: [], lgang: [] })
-    // put on death row mkts in the 'wrong' side. side was updated in oneSidedMarketSwitch 
+                    ((grps, item) => 
+                        { item.name.endsWith("SHORT") ? grps.sgang.push(item) : grps.lgang.push(item); return grps; }, 
+                        { sgang: [], lgang: [] })
+
+    // determine 
     // if direction is TORO then put on death row the shorts 
-    //let markedSide = (unfavSide == Direction.TORO) ? Side.LONG : Side.SHORT                   
     let deathrow = (unfavSide == Side.LONG) ? longShortGang.lgang : longShortGang.sgang
     // spare the good performers in the losing gang
     let pardonned = Object.values(deathrow).filter((n) => 
                     n.basisCollateral / n.startCollateral > config.TP_MIN_PARDON_RATIO )
     let toExecute = deathrow.filter( (n) => !pardonned.includes(n) )
     // cull the undesirebles
-    if(toExecute.length)
+    if(toExecute.length) {
         for (const m of deathrow ) {
-//            const n = this.marketMap[m].name
-            try {
-                await this.close(m)
-                // this.close will take care of updating start/basisCollat 
-            }
-            catch { 
-                "QRM.Close failed:" + m.name
-            }
+            try { await this.close(m) }
+            catch { "QRM.Close failed:" + m.name }
         }
+    }
 }
 
 // DESC: flags if regime switch to one sided (bull or bear) really is a Participation signal
@@ -1006,7 +1020,7 @@ async prematureSideClose(unfavSide: Side) {
 // ASSERT TP_MIN_COL_RATIO > TP_MAX_LOSS
 // Critera for regime switch: collateral/startCollateral == MaxLoss collateral ratio
 // Criterial can be cusotmizez
-/*
+
 async oneSidedTransitionCheck() :Promise<boolean> {
     // true only if mkt switch from null to one sided OR sides flipped e.g from rally to bear
     let check = false
@@ -1084,7 +1098,7 @@ async legMaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
     // skip if market inactive
     let check = false
     let leg = this.marketMap[mkt.name]
-    if (await this.nonZeroPos(leg)) { 
+    if (await this.isNonZeroPos(leg)) { 
         // collatbasis is the peak colateral
         let collatbasis = mkt.basisCollateral
         const col = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
@@ -1163,6 +1177,7 @@ async ensureSwapListenersOK(): Promise<void> {
     // first things first.check for TP_MAX_LOSS
     if ( await this.legMaxLossCheckAndStateUpd(market) ) {   // have a positive => close took place. check for qrom crossing
         this.putMktToSleep(market)
+        this.solidarityKill(market.side)
     }
     //updat pool data
     this.updatePoolData()

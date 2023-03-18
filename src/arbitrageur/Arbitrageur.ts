@@ -392,8 +392,7 @@ export class Arbitrageur extends BotService {
     this.poolData[symb].currTickDelta = tickDelta
 
     const csvString = `${symb},${Date.now()},${tickDelta}\n`;
-    console.log(csvString)
-    fs.appendFile('cumticklog.csv', csvString, (err) => { if (err) throw err });
+    fs.appendFile('tickdelt.acsv', csvString, (err) => { if (err) throw err });
     //TODO.DEBT need to handle this file resource
     // getting race condition
     
@@ -553,32 +552,13 @@ async closeMkt( mktName: string) {
         }
  } 
 
-// report to run onProcessExit
-BKPenTWreport() {
-    for (const m in this.marketMap) {
-        let mkt = this.marketMap[m]
-    }
-    // open a file for writing  
-    let twrstrm = fs.createWriteStream('twreport.csv');
-    // write headerr
-    twrstrm.
-    write(`name, startCollat, endCollat, isSettled\n`);
-    // write data
-//    Object.values(this.marketMap).forEach(m => {
-    for(const m of Object.values(this.marketMap)) {
-        let isSettled = m.startCollateral == m.basisCollateral ? "true" : "false"
-        twrstrm.write(`${m.name}, ${m.initCollateral}, ${m.basisCollateral}, ${isSettled}\n`)
-    }
-    twrstrm.end()
- }
-
   genTWreport() {
     const writeStream = fs.createWriteStream('twreport.csv');
     writeStream.write(`name, startCollat, endCollat, isSettled\n`);
   
     for (const m of Object.values(this.marketMap)) {
       const isSettled = m.startCollateral === m.basisCollateral ? "true" : "false";
-      writeStream.write(`${m.name}, ${m.startCollateral}, ${m.basisCollateral}, ${isSettled}\n`);
+      writeStream.write(`${m.name}, ${m.initCollateral}, ${m.basisCollateral}, ${isSettled}\n`);
     }
   
     writeStream.on('finish', () => {
@@ -968,9 +948,12 @@ async solidarityKill(unfavSide: Side) {
     let pardonned = Object.values(deathrow)
                           .filter((n) => n.basisCollateral / n.startCollateral > config.TP_MIN_PARDON_RATIO )
     // cull the undesirebles
+    console.log(`INFO: ${pardonned.map(m => m.name).join(', ')}`);
+
     let toExecute = deathrow.filter( (n) => !pardonned.includes(n) )
     if (toExecute.length) {
         for (const m of deathrow ) {
+            console.log("INFO: SolKill: " + m.name)
             try { await this.close(m) }
             catch { "QRM.Close failed:" + m.name }
         }

@@ -88,16 +88,41 @@ balance:"10000000000000000000000"}],
 export default config;
 
 *run fork*
-npx hardhat node --fork 
-https://opt-mainnet.g.alchemy.com/v2/oH4_c4rONzDHSXUvSdFpuXAmgMpvsQIi  
---fork-block-number 30306622
-* WORKFLOWS
-** test changes to deploy
-   - s [using live network] //in some cases may need to use hardhat
-     - [X] use dot-env configuration
-     - [ ] put debug breakpoints to avoid opening/closing
+- steps
+  - [ ] cd /Users/ayb/mio/code/tinker/dft/hh
+  - [ ] ensure hardhat.config poinint to valid account
+    - [ ] pk in hh.config to match what u have in visual config
+      - [ ] e.g ea69cd89c97833a5a36098c0f231c21a5cd1f5af083878e870903a85efda7561 (SHOL_SHORT)
 
-** deploy in DO   
+	  - [ ]  npx hardhat node --fork https://opt-mainnet.g.alchemy.com/v2/oH4_c4rONzDHSXUvSdFpuXAmgMpvsQIi  --fork-block-number 30306622
+
+    
+* WORKFLOWS
+** deploy new change
+   
+*** local testing
+- local testing can be against hardhat snapshot or live prod node (if already have open position)
+
+**** hardhat-snapshot test. launch.json:hardhat
+- see *run fork*
+
+
+***** scenrios
+
+- s
+  - [ ] scenario: SOLshort at 65131100
+    - [ ] pair: (0x7Ca51ce88195eD6a2C7289DD1B286a713fbD806b,
+    - [ ] uret: 0.9567
+  - [ ] trigger onLoss, onScale by chaning MIN_RET/MAX_RET 96/95
+  - [ ] hardhat supports only one signer. use 'bypass dotenv' debug config using only one
+  - [ ] config turn false everything xcept solshort
+    
+- s [using live network] //in some cases may need to use hardhat
+  - [X] use dot-env configuration
+  - [ ] put debug breakpoints to avoid opening/closing
+
+**** live prod node test. launch.json:use-dotenv       
+*** deploy in DO   
 - local
   - [ ] git commit src/arbitrageur/Arbitrageur.ts -m blah
   - [ ] git push origin qa
@@ -108,18 +133,10 @@ https://opt-mainnet.g.alchemy.com/v2/oH4_c4rONzDHSXUvSdFpuXAmgMpvsQIi
   - [ ] cp src/configs/config.json src/configs/bkp.config.jsonbkp copyof config.json
   - [ ] DO: git pull
 
-*** debuger-hardhat testing
-- s
-  - [ ] scenario: SOLshort at 65131100
-    - [ ] pair: (0x7Ca51ce88195eD6a2C7289DD1B286a713fbD806b,
-    - [ ] uret: 0.9567
-  - [ ] trigger onLoss, onScale by chaning MIN_RET/MAX_RET 96/95
-  - [ ] hardhat supports only one signer. use 'bypass dotenv' debug config using only one
-  - [ ] config turn false everything xcept solshort
+*** UAT in DO
 
-*** qa testing
-- i
-  - [ ] use single name, low lev but high sensitivity  e.g .98, 1.02 to force logic at low cost
+
+
 * GOTCHAS
 ** debugger acting weird
 

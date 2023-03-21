@@ -123,6 +123,8 @@ interface Market {
     //leverage: number
     resetNeeded:boolean
     resetSize: number
+    startSize: number | null // initialized on first open and nulled on close
+    openMark: number | null // mark at open
     cummulativeLoss: number
     //notionalBasis: number
     maxPnl: number
@@ -316,6 +318,8 @@ export class Arbitrageur extends BotService {
                 resetMargin: market.RESET_MARGIN,
                 longEntryTickDelta: market.TP_LONG_MIN_TICK_DELTA,
                 shortEntryTickDelta: market.TP_SHORT_MIN_TICK_DELTA,
+                openMark:null,
+                startSize:null,
                 cummulativeLoss: 0,
                 maxPnl: 0,
                 //notionalBasis: config.TP_START_CAP/market.RESET_MARGIN,
@@ -392,7 +396,7 @@ export class Arbitrageur extends BotService {
     this.poolData[symb].currTickDelta = tickDelta
 
     const csvString = `${symb},${Date.now()},${tickDelta}\n`;
-    fs.appendFile('tickdelt.acsv', csvString, (err) => { if (err) throw err });
+    fs.appendFile('tickdelt.csv', csvString, (err) => { if (err) throw err });
     //TODO.DEBT need to handle this file resource
     // getting race condition
     
@@ -460,6 +464,14 @@ fs.appendFile('cumticklog.csv', csvString, (err) => {
             let scoll = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
             mkt.basisCollateral = scoll
             mkt.startCollateral = scoll
+            // update mkt.size and mkt.basis using pool latest price
+            let sz = (await this.perpService.getTotalPositionSize(mkt.wallet.address, mkt.baseToken)).toNumber()
+            //TODO.DEBT ensure is not undefined
+            let price = Math.pow(1.001, this.poolState[mkt.baseToken].tick!)
+            this.marketMap[mkt.name].openMark = price
+            // update startSize if first open or was open at restart
+            if (mkt.startSize == null) { mkt.startSize = sz }
+            // make sure to null on close
         }
         catch (e: any) {
             console.error(`ERROR: FAILED OPEN. Rotating endpoint: ${e.toString()}`)
@@ -493,25 +505,6 @@ fs.appendFile('cumticklog.csv', csvString, (err) => {
     console.log(tmstmp + " SETUP: rereg listeners: " + this.ethService.provider.connection.url)
  }
 
-async BKPclose(mkt: Market) {
-    try {
-        await this.closePosition(mkt.wallet, mkt.baseToken, undefined,undefined,undefined)
-        //bookeeping: upd startCollateral to settled and save old one in basisCollateral
-        let scoll = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
-        mkt.basisCollateral = scoll
-        mkt.startCollateral = scoll
-        }
-    catch (e: any) {
-            console.error(`ERROR: FAILED CLOSE. Rotating endpoint: ${e.toString()}`)
-            //this.ethService.rotateToNextEndpoint()
-            this.rotateToNextProvider()
-            // one last try....
-            await this.closePosition(mkt.wallet, mkt.baseToken, undefined,undefined,undefined)
-            console.log("RECOVERY: closed after rotation")
-            throw e  
-    }
- }
-
  async close(mkt: Market) {
     if (config.DEBUG_FLAG) {
         console.log("DEBUG: close: " + mkt.name)
@@ -523,6 +516,10 @@ async BKPclose(mkt: Market) {
         let scoll = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
         mkt.basisCollateral = scoll
         mkt.startCollateral = scoll
+
+        // null out mkt.size and mkt.basis
+        this.marketMap[mkt.name].startSize = null
+        this.marketMap[mkt.name].openMark =null
         }
     catch (e: any) {
             console.error(`ERROR: FAILED CLOSE. Rotating endpoint: ${e.toString()}`)
@@ -574,8 +571,6 @@ async closeMkt( mktName: string) {
     writeStream.end();
   }
   
- 
-
 //----------------------------------
 //maxCumLossCheck(mkt: Market): Result<number> { return {value: null } }
 // DESCRPT test if a batok (base token) had ended roll and computes TW stats
@@ -666,6 +661,7 @@ mktDirectionChangeCheck():  boolean {
 
     // all must be in agreement
     if( !(allPoitive || allNegative) ) { return false }
+    else { console.log("MKT: " + ethDelta + ", " + btcDelta + ", " + bnbDelta)}
 
     // zebra until proven different  
    this.holosSide = Direction.ZEBRA
@@ -1066,9 +1062,22 @@ async putMktToSleep(mkt: Market) {
 async holosCheck() :Promise<boolean> {
 // compute poolState tick changes segragating positive vs negative
 this.poolState
-
     return false
 }
+// equivalent to accountValue (pnlAdjusted value)
+ async getMarkPnl(mkt: Market) :Promise<number> {
+    // should only get here if tick, size and openMark are defined
+    let markpnl = 0
+    // get current position value. mkt.size is updated by this.open and this.close
+    let markPrice = Math.pow(1.0001,this.poolState[mkt.name].tick!)
+    let sz = await this.perpService.getTotalPositionSize(mkt.wallet.address, mkt.baseToken)
+    let pval = sz.toNumber() * markPrice
+    // get start position value. updated by this.open. this.close sets it to null
+    let startPval = mkt.startSize! * mkt.openMark! 
+    markpnl = pval - startPval
+    return markpnl
+}
+
 //----------------------------------------------------------------------------------------------------------
 // this check also update state: peak and uret
 // COND-ACT: on TP_MAX_LOSS close leg. When twin MAX_LOSS (pexit) rollStateCheck will restart
@@ -1077,32 +1086,40 @@ this.poolState
 // NOTE: when dado is stopped 
 //----------------------------------
 
-async legMaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
+async maxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
     // skip if market inactive
-    let check = false
+    let check = false ; let markPnl = 0 ; let mret = null
     let leg = this.marketMap[mkt.name]
     if (await this.isNonZeroPos(leg)) { 
         // collatbasis is the peak colateral
         let collatbasis = mkt.basisCollateral
         const col = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
         let uret = 1 + (col - collatbasis)/collatbasis
-        if (uret < config.TP_MAX_ROLL_LOSS ) {
-            check = true // mark check positive 
-        }
-        // peak update
-        // startCollateral is always realized. basisCollateral unrealized
-        if (col > collatbasis) { 
-            mkt.basisCollateral = col 
-        }  
-        // update uret used by qrom holos check
+        if (uret < config.TP_MAX_ROLL_LOSS ) { check = true  }// mark check positive 
+
+        // peak update. startCollateral is always realized. basisCollateral unrealized
+        if (col > collatbasis) {  mkt.basisCollateral = col }  
+        // update uret used by qrom holos check. Used at all?? rmv
         mkt.uret = uret
-        console.log(mkt.name + " cbasis:" + mkt.basisCollateral.toFixed(2) + " uret:" + uret.toFixed(4))
+        // compute real return based on mark price based pnl. can only compute if sz and tick are nonzero
+        let tk = this.poolState[mkt.name].tick
+        if (mkt.startSize && mkt.openMark && tk) { 
+            markPnl = await this.getMarkPnl(mkt) 
+            // (collatbasis + markPnl - collatbasis)/collatbasis = 1 + markPnl/collatbasis
+            mret = 1 + (markPnl)/collatbasis
+        }
+        else if (!mkt.startSize || !mkt.openMark) { // if no mkt size, pos WAS open at restart. get it from perpService
+            if (!mkt.startSize) {
+              mkt.startSize = (await this.perpService.getTotalPositionSize(mkt.wallet.address, mkt.baseToken)).toNumber();
+            }
+            if (!mkt.openMark) {
+              let twappx = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber();
+              this.marketMap[mkt.name].openMark = twappx/mkt.startSize;
+            }
+          }
+          console.log(mkt.name + " cbasis:" + mkt.basisCollateral.toFixed(2) + " uret:" + uret.toFixed(4) +
+          " mret:" + (mret ?? "null") + " mpnl:" + markPnl.toFixed(4));
     } 
-    /*dump ticks output for display
-    let dltatick = this.poolStateMap[mkt.tkr].tick! - this.poolStateMap[mkt.tkr].prevTick!
-    if (dltatick != 0) {
-        console.log(mkt.name + " dtks:" + dltatick ) 
-    }*/
     return check 
   }
 
@@ -1158,7 +1175,7 @@ async ensureSwapListenersOK(): Promise<void> {
     //TODO.BIZCONT redo ensureSwapListenersOK, it will always return listerneCounter of zero coz new instance
     await this.ensureSwapListenersOK()
     // first things first.check for TP_MAX_LOSS
-    if ( await this.legMaxLossCheckAndStateUpd(market) ) {   // have a positive => close took place. check for qrom crossing
+    if ( await this.maxLossCheckAndStateUpd(market) ) {   // have a positive => close took place. check for qrom crossing
         this.putMktToSleep(market)
         this.solidarityKill(market.side)
     }

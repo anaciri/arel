@@ -257,7 +257,6 @@ export class Arbitrageur extends BotService {
                                 this.poolData[symb].tickBuff.splice(0, this.poolData[symb].tickBuff.length - 1);
                                 this.poolData[symb].isRead = false
                             }
-
                         })
         }   
     }
@@ -396,7 +395,10 @@ export class Arbitrageur extends BotService {
     this.poolData[symb].currTickDelta = tickDelta
 
     const csvString = `${symb},${Date.now()},${tickDelta}\n`;
-    fs.appendFile('tickdelt.csv', csvString, (err) => { if (err) throw err });
+    if (Math.abs(tickDelta) > config.TP_NOISE_MIN_TICK_DLTA) {
+        const csvString = `${symb},${Date.now()},${tickDelta}\n`;
+        fs.appendFile('tickdelt.csv', csvString, (err) => { if (err) throw err });
+    }
     //TODO.DEBT need to handle this file resource
     // getting race condition
     
@@ -1114,7 +1116,8 @@ async maxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
             }
             if (!mkt.openMark) {
               let twappx = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber();
-              this.marketMap[mkt.name].openMark = twappx/mkt.startSize;
+              console.warn("WARN: using twap to set openMark in: " + mkt.name)
+              this.marketMap[mkt.name].openMark = twappx/mkt.startSize
             }
           }
           console.log(mkt.name + " cbasis:" + mkt.basisCollateral.toFixed(2) + " uret:" + uret.toFixed(4) +

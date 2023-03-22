@@ -35,12 +35,14 @@ enum Direction {
 
 type TickRecord = {
     timestamp: number
-    tickDelta: number | null
+    tick: number | null
   };
 
 type CumulativeTick = {
     lastTimestamp: number;
     cumTick: number;
+    perp15secCumTick: number // acc of last 15sec perp cap timeslot
+    perp2secRunningCumTick: number // current running 2 second accumulation. after 15sec will replace perp15secCumTick
   };
 
 interface PoolData {
@@ -95,6 +97,7 @@ interface PoolState {
     tick: number | undefined,
     prevTick: number | undefined,
     poolContract: UniswapV3Pool,
+    cumulativeTick: CumulativeTick | null, // time interval determine by PM_CUM_TICK_INTERVAL default 1 second
     //sqrtPriceX96: number, // 96 bits of precision. needed??
 }  
 
@@ -249,7 +252,10 @@ export class Arbitrageur extends BotService {
                                 liquidity: Big, tick: number, event: ethers.Event) =>
                         { // poolDataupdate will drain tickLog
                             const timestamp = Math.floor(Date.now())
-                            this.poolData[symb].tickBuff.push({ timestamp: timestamp, tickDelta: tick})
+                            // update
+                            this.poolState[symb].prevTick = this.poolState[symb].tick
+                            this.poolState[symb].tick= tick
+                            this.poolData[symb].tickBuff.push({ timestamp: timestamp, tick: tick})
                             //this.poolData[symb].lastTick = tick
                             // if data has been read then empty tickLog
                             //>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
@@ -269,6 +275,7 @@ export class Arbitrageur extends BotService {
                 poolContract: poolContract,
                 tick:0,  // otherwise wakeup check will choke
                 prevTick: 0,
+                cumulativeTick: null
               };
         }
     }
@@ -277,7 +284,7 @@ export class Arbitrageur extends BotService {
     createPoolDataMap() {
         for (const pool of this.perpService.metadata.pools) {
           this.poolData[pool.baseSymbol] = { 
-            lastRecord: {tickDelta: 0, timestamp: 0},
+            lastRecord: {tick: 0, timestamp: 0},
             tickBuff: [],
 //            prevTickDelta: 0,
             currTickDelta: 0,
@@ -334,10 +341,46 @@ export class Arbitrageur extends BotService {
     async start(): Promise<void> {
         //TODO.BIZCONT renable rotation to do the health checks
         this.ethService.enableEndpointRotation()
-        this.arbitrageRoutine()
+        await this.arbitrageRoutine()
+        //await Promise.all([this.arbitrageRoutine(), this.tulutRoutine()]);
     }
+/*
+    // check if INTRA perp cap timeslot 15 sec breached TP_MIN_TICK_DELTA
+    capEdgeCheck() {
+        loop (CAP_EDGE_TICKERS)
+        if tulutCounter < 4 and cummulativeFifteenSec - runningCummulative2second > TP_MIN_TICK_DELTA
+           open position 
+           if cummulativeFifteenSec - runningCummulative2second > 100 dump buffer for analysis as log.err coz should not be here
+     }
+    async tulutRoutine() {
+        // list of tickers to monitor vSOL, vPERP, vFLOW and vAAVE
+        const CAP_EDGE_TICKERS = ["vSOL", "vPERP", "vFLOW", "vAAVE"]
 
+// pxAccumulatorUpdate() {        
+          let tickAccum = 0;
+        // loop through tickers. find tick in tickBuff with timestamp closest to 2 secs back
+        for (const ticker of tickers) {
+            let now = Math.floor(Date.now());
+            let tickBuff = this.poolData[ticker].tickBuff;
+            let reftick = tickBuff.find((tk) => tk.timestamp > now - 2000)
+            if (!reftick) { continue }
+            // get all the ticks in tickBuff with timestamp between reftick.timestamp and now
+            let tickList = tickBuff.filter((tk) => tk.timestamp >= reftick!.timestamp && tk.timestamp <= now)
+            // aggregate all the ticks in tickList
+            for (const tk of tickList) { tickAccum += tk.tick! }
+            console.log("ticker: ", ticker, " tickAccum: ", tickAccum)
 
+            updtate poolData.cumulative15sec
+            update runningCummulaive2second  // current 2sec accumulation before 15sec reset
+        }
+ // pxAcumulatorEnd
+ // capEdgeCheck() {
+        if tulutCounter < 4 and cummulativeFifteenSec - runningCummulative2second > TP_MIN_TICK_DELTA
+           open position 
+           if cummulativeFifteenSec - runningCummulative2second > 100 dump buffer for analysis as log.err coz should not be here
+        
+    }
+*/
     async arbitrageRoutine() {
         while (true) {
             //TODO.STK turn on heart beat below
@@ -345,11 +388,9 @@ export class Arbitrageur extends BotService {
             await Promise.all(
                 Object.values(this.marketMap).map(async market => {
                     try {
-                        // Biss 
                         //await this.arbitrage(market)
                         await this.checksRoutine(market)
-                    } catch (err: any) {
-                        await this.jerror({ event: "ArbitrageError", params: { err } })
+                    } catch (err: any) { await this.jerror({ event: "ArbitrageError", params: { err } })
                     }
                 }),
             )
@@ -364,28 +405,18 @@ export class Arbitrageur extends BotService {
 
  updatePoolData(): void {
  for (const symb in this.poolState) {   
-    //let poolData  = this.poolData[symb]
     if (this.poolData[symb].tickBuff.length == 0) { continue }
-    //const lastUpdate = poolData.lastTick // last tick update for this ticker
-    // drain tickLog into ticks
-    //const tsticks = [...this.poolData[symb].tickLog]
-     // take the difference btw last and first in tickLog  
-    //const tickDelta = tsticks[tsticks.length-1].tick! - tsticks[0].tick!
     if (this.poolData[symb].tickBuff.length == 0) { 
-        console.log(symb + " DEBUG: should not be here" + this.poolData[symb].lastRecord?.tickDelta)
+        console.error(symb + " DEBUG: should not be here" + this.poolData[symb].lastRecord?.tick)
         //victim of race condition. skip and see if next round will work
         continue
     }
     // get tick delta from the tickBuff. Diff btw last and first in the buffer
     const len = this.poolData[symb].tickBuff.length
-    const tickDelta = this.poolData[symb].tickBuff[len-1].tickDelta! - this.poolData[symb].tickBuff[0].tickDelta!
+    const tickDelta = this.poolData[symb].tickBuff[len-1].tick! - this.poolData[symb].tickBuff[0].tick!
     // set flag to let handler to reset tickLog
     
-    // weird behavior if i just nuke the array. instead pop all except last item
-    //this.poolData[symb].tickLog = []
-    //while (this.poolData[symb].tickLog.length) { this.poolData[symb].tickLog.pop()}
-      
-    this.poolData[symb].lastRecord.tickDelta = tickDelta
+    this.poolData[symb].lastRecord.tick = tickDelta
     this.poolData[symb].lastRecord.timestamp = Date.now()
     //TODO.DEBT HACK work aournd the race condition. wrap in a setter/getter with mutex
     // flag handler that ok to discard current buffer and start a new one (or throw old entries)
@@ -393,8 +424,7 @@ export class Arbitrageur extends BotService {
 
     //this.poolData[symb].prevTickDelta = this.poolData[symb].currTickDelta
     this.poolData[symb].currTickDelta = tickDelta
-
-    const csvString = `${symb},${Date.now()},${tickDelta}\n`;
+    
     if (Math.abs(tickDelta) > config.TP_NOISE_MIN_TICK_DLTA) {
         const csvString = `${symb},${Date.now()},${tickDelta}\n`;
         fs.appendFile('tickdelt.csv', csvString, (err) => { if (err) throw err });
@@ -455,7 +485,7 @@ fs.appendFile('cumticklog.csv', csvString, (err) => {
     return (pos != 0)
  }
 
- async open(mkt: Market, usdAmount: number ) {
+ async bkpopen(mkt: Market, usdAmount: number ) {
     if (config.DEBUG_FLAG) {
         console.log("DEBUG: open: " + mkt.name + " " + usdAmount)
         return
@@ -469,7 +499,7 @@ fs.appendFile('cumticklog.csv', csvString, (err) => {
             // update mkt.size and mkt.basis using pool latest price
             let sz = (await this.perpService.getTotalPositionSize(mkt.wallet.address, mkt.baseToken)).toNumber()
             //TODO.DEBT ensure is not undefined
-            let price = Math.pow(1.001, this.poolState[mkt.baseToken].tick!)
+            let price = Math.pow(1.001, this.poolState[mkt.tkr].tick!)
             this.marketMap[mkt.name].openMark = price
             // update startSize if first open or was open at restart
             if (mkt.startSize == null) { mkt.startSize = sz }
@@ -482,19 +512,40 @@ fs.appendFile('cumticklog.csv', csvString, (err) => {
             console.log("Re-oppened...")
         }
  }
-/*
- async open(wlt: ethers.Wallet, btoken: string, side: Side, usdAmount: number ) {
+
+ async open(mkt: Market, usdAmount: number ) {
+    if (config.DEBUG_FLAG) {
+        console.log("DEBUG: open: " + mkt.name + " " + usdAmount)
+        return
+    }
     try {
-        await this.openPosition(wlt!, btoken ,side,AmountType.QUOTE,Big(usdAmount),undefined,undefined,undefined)
-                let scoll = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
+        await this.openPosition(mkt.wallet, mkt.baseToken ,mkt.side ,AmountType.QUOTE,Big(usdAmount),undefined,undefined,undefined)
+     }
+    catch (e: any) {
+        console.error(`ERROR: FAILED OPEN. Rotating endpoint: ${e.toString()}`)
+        this.ethService.rotateToNextEndpoint()
+        try {
+            await this.openPosition(mkt.wallet,mkt.baseToken,mkt.side,AmountType.QUOTE, Big(usdAmount),undefined,undefined,undefined)
+            console.log("INFO: Re-opened...")
+        } catch (e: any) {
+            console.error(`ERROR: FAILED SECOND OPEN: ${e.toString()}`)
+            throw e
         }
-        catch (e: any) {
-            console.error(`ERROR: FAILED OPEN. Rotating endpoint: ${e.toString()}`)
-            this.ethService.rotateToNextEndpoint()
-            await this.openPosition( wlt!,btoken,side,AmountType.QUOTE, Big(usdAmount),undefined,undefined,undefined )
-            console.log("Re-oppened...")
-        }
- }*/
+    }
+    // open was successful. update pricing
+        let scoll = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
+        console.warn("WARN: using twap based getAccountValue to compute basis. FIXME!")
+        mkt.basisCollateral = scoll
+        mkt.startCollateral = scoll
+           // update mkt.size and mkt.basis using pool latest price
+           let sz = (await this.perpService.getTotalPositionSize(mkt.wallet.address, mkt.baseToken)).toNumber()
+           //TODO.DEBT ensure is not undefined
+           let price = Math.pow(1.001, this.poolState[mkt.tkr].tick!)
+           this.marketMap[mkt.name].openMark = price
+           // update startSize if first open or was open at restart
+           if (mkt.startSize == null) { mkt.startSize = sz }
+           // make sure to null on close
+ }
 
  // close sort of dtor. do all bookeeping and cleanup here
  //REFACTOR: this.close(mkt) will make it easier for functinal styling
@@ -1071,7 +1122,7 @@ this.poolState
     // should only get here if tick, size and openMark are defined
     let markpnl = 0
     // get current position value. mkt.size is updated by this.open and this.close
-    let markPrice = Math.pow(1.0001,this.poolState[mkt.name].tick!)
+    let markPrice = Math.pow(1.0001,this.poolState[mkt.tkr].tick!)
     let sz = await this.perpService.getTotalPositionSize(mkt.wallet.address, mkt.baseToken)
     let pval = sz.toNumber() * markPrice
     // get start position value. updated by this.open. this.close sets it to null
@@ -1104,7 +1155,7 @@ async maxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
         // update uret used by qrom holos check. Used at all?? rmv
         mkt.uret = uret
         // compute real return based on mark price based pnl. can only compute if sz and tick are nonzero
-        let tk = this.poolState[mkt.name].tick
+        let tk = this.poolState[mkt.tkr].tick
         if (mkt.startSize && mkt.openMark && tk) { 
             markPnl = await this.getMarkPnl(mkt) 
             // (collatbasis + markPnl - collatbasis)/collatbasis = 1 + markPnl/collatbasis

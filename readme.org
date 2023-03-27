@@ -109,6 +109,26 @@ export default config;
 
 ***** scenrios
 
+******* Block:  BNB
+- events
+  - [ ] realized pnl: "4424242424242424"  <--------
+  - [ ] positionChange:
+    "exchangedPositionSize":"65496957121485175"
+    "exchangedPositionNotional":"-22099090909090907880"
+    "fee":"22121212121212120"
+    "openNotional":"-22121212121212120000"
+    "sqrtPriceAfterX96":"1455315141843266345934788422957"
+	
+- last open.swap
+  - [ ] amount0 : -65496957121485175
+       amount1 : 22165587672107229569
+       sqrtPriceX96 : 1455315141843266345934788422957
+       liquidity :317838935315989593923871
+       tick :58215
+
+  - state change
+    - [ ] balance: 481835753433825467740 -> 481835924915803390
+      
 - s
   - [ ] scenario: SOLshort at 65131100
     - [ ] pair: (0x7Ca51ce88195eD6a2C7289DD1B286a713fbD806b,

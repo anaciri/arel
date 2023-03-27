@@ -20,6 +20,8 @@ import { Interface } from "readline"
 //import { IUniswapV3PoolEvents } from "@perp/IUniswapV3PoolEvents";
 
 require('dotenv').config();
+//const CAP_EDGE_TICKERS = ["vSOL", "vPERP", "vFLOW", "vNEAR", "vFTM", "vAPE", "vAAVE"]
+const CAP_EDGE_TICKERS = ["vSOL", "vPERP", "vFLOW", "vAAVE"]
 
 const DBG_run = false 
 // typedefs
@@ -35,20 +37,20 @@ enum Direction {
 
 type TickRecord = {
     timestamp: number
-    tick: number | null
+    tick: number
   };
 
 type CumulativeTick = {
-    lastTimestamp: number;
-    cumTick: number;
-    perp15secCumTick: number // acc of last 15sec perp cap timeslot
-    perp2secRunningCumTick: number // current running 2 second accumulation. after 15sec will replace perp15secCumTick
+    refCumTickTimestamp: number;
+    refCumTick: number // acc of last 15sec perp cap timeslot
+    prevRefCumTick: number // previous acc of last 15sec perp cap timeslot
+    currCumTick: number // current running accum running every tulut cycle
   };
 
 interface PoolData {
-    lastRecord: TickRecord 
-    tickBuff: TickRecord[] //timestamp, tick raw
-    currTickDelta: number, //latest delta computed by updatePoolData
+    //lastRecord: TickRecord 
+    bucket: TickRecord[] //timestamp, tick raw
+    //currTickDelta: number, //latest delta computed by updatePoolData
     //prevTickDelta: number, //previou delta saved by updatePoolData
     isRead: boolean
 }  
@@ -94,6 +96,7 @@ function transformValues(map: Map<string, string>,
   
 interface PoolState {
     poolAddr: string,
+    bucket: TickRecord[],
     tick: number | undefined,
     prevTick: number | undefined,
     poolContract: UniswapV3Pool,
@@ -151,7 +154,7 @@ export class Arbitrageur extends BotService {
     private holosSide: Direction = Direction.ZEBRA
     private prevHolsSide: Direction = Direction.ZEBRA
     private poolState: { [keys: string]: PoolState } = {}
-    private poolData: { [ticker: string]: PoolData } = {}
+    private tickBuff: { [ticker: string]: PoolData } = {}
 
     //DBGpoolETHcontract: UniswapV3Pool
 
@@ -176,9 +179,15 @@ export class Arbitrageur extends BotService {
         //not needed coz on rotate it will reregister listeners
         //for ( let i = 0; i < this.ethService.web3Endpoints.length; ++i )
    
-        this.setupPoolListeners()
+        await this.setupPoolListeners()
+        // move this to checker
+        const proxies = ["vBTC", "vETH", "vBNB"]
+        for (const tkr of proxies) {
+            let subs = this.poolState[tkr].poolContract.filters.Swap()
+            console.log("SETUP: proxy " + tkr + ": " + subs.topics)
+        }
+
         await this.createMarketMap()
-        
     }
 
     async DBG_setupPoolListeners(): Promise<void> {
@@ -217,32 +226,36 @@ export class Arbitrageur extends BotService {
     /// @param liquidity The liquidity of the pool after the swap
     /// @param tick The log base 1.0001 of price of the pool after the swap
 
-    async BKPsetupPoolListeners(): Promise<void> {
-        //for (const p of this.perpService.metadata.pools) {
-        for (const symb in this.poolState) {
-            //const unipool = await this.perpService.createPool(this.poolStateMap[symb].poolAddr);
-            let unipool = this.poolState[symb].poolContract
-            // setup Swap event handler
-            unipool.on('Swap', (sender: string, recipient: string, amount0: Big, amount1: Big, sqrtPriceX96: Big, liquidity: Big, tick: number, event: ethers.Event) => {
-                // update previous tick before overwriting
-                this.poolState[symb].prevTick = this.poolState[symb].tick
-                this.poolState[symb].tick= tick
-                // convert ticks to price: price = 1.0001 ** tick
-                let price = 1.0001 ** tick
-
-                const epoch = Math.floor(Date.now() / 1000).toString();
-                // TURN OFF CONSOLE LOGGING. append to file
-                //console.log(`${epoch}, ${symb}, ${this.poolStateMap[symb].prevTick}, ${this.poolStateMap[symb].tick}, ${price.toFixed(4)}`);
-                const stream = fs.createWriteStream('ticks.csv', {flags:'a'} ); 
-                stream.write(`${epoch}, ${symb}, ${this.poolState[symb].prevTick}, ${this.poolState[symb].tick}, ${price.toFixed(4)}\n`);
-              });
-            }
-    }
+  
     //--------------------------------------------------------------------------------
     // setup listeners for all pools
     // responsable to update the poolData.tickLog used in updatePoolData to compute the cumulative tick changes
+    // TODO: move poolContractAddr to PoolData
     //--------------------------------------------------------------------------------
     async setupPoolListeners(): Promise<void> {
+        //for (const p of this.perpService.metadata.pools) {
+        for (const tkr in this.poolState) {
+            //const unipool = await this.perpService.createPool(this.poolStateMap[symb].poolAddr);
+            let unipool = this.poolState[tkr].poolContract
+            // setup Swap event handler
+            unipool.on('Swap', (sender: string, recipient: string, amount0: Big, amount1: Big, sqrtPriceX96: Big, 
+                                liquidity: Big, tick: number, event: ethers.Event) =>
+                        { // Fill the bucket until the flags changes to read
+                            const timestamp = Math.floor(Date.now())
+                            this.tickBuff[tkr].bucket.push({ timestamp: timestamp, tick: tick})
+                            // if data has been read then empty tickLog
+                            //>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                            if (this.tickBuff[tkr].isRead == true) {
+                                this.tickBuff[tkr].bucket.splice(0, this.tickBuff[tkr].bucket.length - 1);
+                                this.tickBuff[tkr].isRead = false
+                            }
+                        // heartbeat
+                        //console.log(`HEARTBEAT: ${timestamp}, ${symb}`)    
+                        })
+        }   
+    }
+
+    async BKPsetupPoolListeners(): Promise<void> {
         //for (const p of this.perpService.metadata.pools) {
         for (const symb in this.poolState) {
             //const unipool = await this.perpService.createPool(this.poolStateMap[symb].poolAddr);
@@ -255,22 +268,23 @@ export class Arbitrageur extends BotService {
                             // update
                             this.poolState[symb].prevTick = this.poolState[symb].tick
                             this.poolState[symb].tick= tick
-                            this.poolData[symb].tickBuff.push({ timestamp: timestamp, tick: tick})
-                            //this.poolData[symb].lastTick = tick
+                            this.tickBuff[symb].bucket.push({ timestamp: timestamp, tick: tick})
                             // if data has been read then empty tickLog
                             //>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-                            if (this.poolData[symb].isRead == true) {
-                                this.poolData[symb].tickBuff.splice(0, this.poolData[symb].tickBuff.length - 1);
-                                this.poolData[symb].isRead = false
+                            if (this.tickBuff[symb].isRead == true) {
+                                this.tickBuff[symb].bucket.splice(0, this.tickBuff[symb].bucket.length - 1);
+                                this.tickBuff[symb].isRead = false
                             }
+                        // heartbeat
+                        //console.log(`HEARTBEAT: ${timestamp}, ${symb}`)    
                         })
         }   
     }
-
     createPoolStateMap() {
         for (const pool of this.perpService.metadata.pools) {
             const poolContract = this.perpService.createPool(pool.address)
             this.poolState[pool.baseSymbol] = { 
+                bucket:[],
                 poolAddr: pool.address,
                 poolContract: poolContract,
                 tick:0,  // otherwise wakeup check will choke
@@ -283,11 +297,11 @@ export class Arbitrageur extends BotService {
     // init PoolData for all pools
     createPoolDataMap() {
         for (const pool of this.perpService.metadata.pools) {
-          this.poolData[pool.baseSymbol] = { 
-            lastRecord: {tick: 0, timestamp: 0},
-            tickBuff: [],
+          this.tickBuff[pool.baseSymbol] = { 
+            //lastRecord: {tick: 0, timestamp: 0},
+            bucket: [],
 //            prevTickDelta: 0,
-            currTickDelta: 0,
+            //currTickDelta: 0,
             isRead: false,
           };
         }
@@ -352,35 +366,91 @@ export class Arbitrageur extends BotService {
            open position 
            if cummulativeFifteenSec - runningCummulative2second > 100 dump buffer for analysis as log.err coz should not be here
      }
+     */
     async tulutRoutine() {
         // list of tickers to monitor vSOL, vPERP, vFLOW and vAAVE
-        const CAP_EDGE_TICKERS = ["vSOL", "vPERP", "vFLOW", "vAAVE"]
-
-// pxAccumulatorUpdate() {        
-          let tickAccum = 0;
-        // loop through tickers. find tick in tickBuff with timestamp closest to 2 secs back
-        for (const ticker of tickers) {
-            let now = Math.floor(Date.now());
-            let tickBuff = this.poolData[ticker].tickBuff;
-            let reftick = tickBuff.find((tk) => tk.timestamp > now - 2000)
-            if (!reftick) { continue }
-            // get all the ticks in tickBuff with timestamp between reftick.timestamp and now
-            let tickList = tickBuff.filter((tk) => tk.timestamp >= reftick!.timestamp && tk.timestamp <= now)
-            // aggregate all the ticks in tickList
-            for (const tk of tickList) { tickAccum += tk.tick! }
-            console.log("ticker: ", ticker, " tickAccum: ", tickAccum)
-
-            updtate poolData.cumulative15sec
-            update runningCummulaive2second  // current 2sec accumulation before 15sec reset
-        }
- // pxAcumulatorEnd
- // capEdgeCheck() {
-        if tulutCounter < 4 and cummulativeFifteenSec - runningCummulative2second > TP_MIN_TICK_DELTA
-           open position 
-           if cummulativeFifteenSec - runningCummulative2second > 100 dump buffer for analysis as log.err coz should not be here
         
+        //const TT_INTERVAL_SEC  = 3 // 15 sec /5 = 3 sec
+        
+        const TT_ROUTINE_SLEEP_SEC = 3 // must be smaller or equal to TT_INTERVAL_SEC
+        // update cummulative prices
+        this.pxAccumUpdate()
+        // check if crossed entry threshold
+        for (const tkr of CAP_EDGE_TICKERS) {
+            let mkt = this.marketMap[tkr]
+            let accpx = this.poolState[mkt.tkr].cumulativeTick
+            // if cummulativeFifteenSec cross threshold open
+            if (!accpx) { continue }
+            //TODO.HEALTHCHECK if tkr not initialized
+            let tickdlta = Math.abs(accpx.currCumTick - accpx.refCumTick) 
+            if ( tickdlta > this.marketMap[tkr].longEntryTickDelta) {
+                 try {
+                    //TODO: this.openPosition(mkt) 
+                 } catch (e) { 
+                    console.error(tkr + ": ERR: failed to open in pxAccumUpdate")
+                 }
+                // if cummulativeFifteenSec - runningCummulative2second > 100 dump buffer for analysis as log.err coz should not be here
+                if (tickdlta > config.DA_DUMP_MIN_TICK_DLTA) {
+                    // dump buffer for analysis as log.err coz should not be here
+                }
+            }
+        }
+        await new Promise(resolve => setTimeout(resolve, TT_ROUTINE_SLEEP_SEC * 1000))
     }
-*/
+
+ pxAccumUpdate() {      
+    const TT_PERP_PCAP_INTERVAL_SEC = 15 // perp 15 sec time to xceed the 250 tics  
+    // are we at the end of the TT_PERP_PCAP_INTERVAL_SEC. compare ts
+    let now = Math.floor(Date.now());
+    for (const tkr of CAP_EDGE_TICKERS) {
+        let mkt = this.marketMap[tkr]
+        let accpx = this.poolState[mkt.tkr].cumulativeTick
+        // if first time initialize
+        if ( !accpx ) {
+            // do we have any ticks to initialize. if not wait for next time
+            
+            if (this.tickBuff[tkr].bucket.length == 0) { continue }
+            // reduce ticks in tickBuff to get the cummulative tick
+            const cumtick = this.tickBuff[tkr].bucket.reduce( 
+                (accumulator, tickRecord) => {
+                    if (tickRecord.tick !== null) { return accumulator + tickRecord.tick }
+                    return accumulator; }, 0)
+
+            let acct = {
+                refCumTickTimestamp: now,
+                // sum all the ticks in the buffer
+                prevRefCumTick: cumtick,
+                refCumTick: cumtick,
+                currCumTick: cumtick
+            }
+            this.poolState[mkt.tkr].cumulativeTick = acct
+        }
+        // has the 15 sec interval passed
+        if ( accpx!.refCumTickTimestamp >= now - TT_PERP_PCAP_INTERVAL_SEC) {
+            accpx!.prevRefCumTick = accpx!.refCumTick
+            accpx!.refCumTick = accpx!.currCumTick
+        // current cummulative tick - refTick now is zero
+        accpx!.refCumTickTimestamp = now
+        this.poolState[mkt.tkr].cumulativeTick = accpx
+        }
+        else {  
+        // not at the end of the 15 sec interval. accumulate the current tick
+        let tickBuff = this.tickBuff[tkr].bucket
+        // pick up ticks since last cyle
+        let reftick = tickBuff.find((tk) => tk.timestamp > now - config.TT_ROUTINE_SLEEP_SEC)
+        // if no new ticks nothing to do
+        if ( reftick ) { 
+            // get all the ticks in tickBuff with timestamp between reftick.timestamp and now
+            let tickset = tickBuff.filter((tk) => tk.timestamp >= reftick!.timestamp && tk.timestamp <= now)
+            // aggregate all the ticks in tickList
+            let tickAccum = 0
+            for (const tk of tickset) { tickAccum += tk.tick! }
+            this.poolState[mkt.tkr].cumulativeTick!.currCumTick  = this.poolState[mkt.tkr].cumulativeTick!.currCumTick + tickAccum
+        }
+         }
+    }
+ }
+
     async arbitrageRoutine() {
         while (true) {
             //TODO.STK turn on heart beat below
@@ -402,18 +472,18 @@ export class Arbitrageur extends BotService {
 //------------------
 // updatePoolData() accumulates tick changes for a given TP_TICK_TIME_INTERVAL, needed to gestimate if there is unidirection
  //------------------
-
- updatePoolData(): void {
+ /*
+ BKPupdatePoolData(): void {
  for (const symb in this.poolState) {   
-    if (this.poolData[symb].tickBuff.length == 0) { continue }
-    if (this.poolData[symb].tickBuff.length == 0) { 
+    if (this.poolData[symb].bucket.length == 0) { continue }
+    if (this.poolData[symb].bucket.length == 0) { 
         console.error(symb + " DEBUG: should not be here" + this.poolData[symb].lastRecord?.tick)
         //victim of race condition. skip and see if next round will work
         continue
     }
     // get tick delta from the tickBuff. Diff btw last and first in the buffer
-    const len = this.poolData[symb].tickBuff.length
-    const tickDelta = this.poolData[symb].tickBuff[len-1].tick! - this.poolData[symb].tickBuff[0].tick!
+    const len = this.poolData[symb].bucket.length
+    const tickDelta = this.poolData[symb].bucket[len-1].tick! - this.poolData[symb].bucket[0].tick!
     // set flag to let handler to reset tickLog
     
     this.poolData[symb].lastRecord.tick = tickDelta
@@ -429,49 +499,41 @@ export class Arbitrageur extends BotService {
         const csvString = `${symb},${Date.now()},${tickDelta}\n`;
         fs.appendFile('tickdelt.csv', csvString, (err) => { if (err) throw err });
     }
-    //TODO.DEBT need to handle this file resource
-    // getting race condition
-    
-
-    /*const csvString = `${symb},${cumTick.lastTimestamp},${cumTick.cumTick}\n`;
-fs.appendFile('cumticklog.csv', csvString, (err) => {
-  if (err) throw err;
-  console.log(`Wrote entry to cumticklog.csv: ${csvString}`);
-});
-    const cumTick: CumulativeTick = msticks.reduce((acc, val) =>
-     {
-        return { lastTimestamp: Date.now(), cumTick: acc.cumTick + (val.tick ?? 0) };
-        }, {lastTimestamp: 0, cumTick: 0});
-
-    
-    const deltaTicks = poolData.tickDeltaHist;
-  
-    // Calculate the start and end timestamps for the time interval
-    const startTime = lastUpdate
-    // if we got here, there is at least one tick in the log with a timestamp
-    const endTime = lastUpdate! + 1000*config.TP_TICK_TIME_INTERVAL_SEC;
-  
-    // Find the index of the first tick that's after the start time
-    let firstIndex = tickLog.findIndex((tk) => tk.timestamp >= startTime!);
-//    let firstIndex = tickLog.findIndex((tk) => tk.timestamp > startTime!);
-  
-    // If there are no ticks after the start time, or empty, skip
-    if (firstIndex === -1 || tickLog.length == 0 ) { continue }
-  
-    // Calculate the cumulative tick for the time interval
-    let cumTick = 0;
-    let i = firstIndex;
-    while (i < tickLog.length && tickLog[i].timestamp < endTime) {
-      cumTick += tickLog[i].tick!;
-     i++;
-    }
-    deltaTicks.push({ lastTimestamp: endTime, cumTick: cumTick})
-    // Update the lastUpdate timestamp
-    this.poolData[symb].lastTickUpdate = endTime
-     */
  }
+}*/
+// DEP: poolData filled by eventListener
+// health check. 1) check foremost the proxies subscriptions are OK 2) check on the other pools
+// detect discontinuity and drain bucket 
+// tickBuff is the lowlevel DS using only by eventhandler and this checker that copies it inot statePool
+checkOnPoolSubEmptyBucket(): void {
+    for (const tkr in this.poolState) {   
+        // poll each pool to detect discontinuity and empty bucket
+        let ts = Date.now()
+        let len = this.tickBuff[tkr].bucket.length
+        let bucket = this.tickBuff[tkr].bucket
+        if (bucket.length == 0) { console.log(ts + " WARN: empty buckt: " + tkr) ; continue }
+
+        // detect discontinuity of events in poolData
+        let age = Date.now() - this.tickBuff[tkr].bucket[len-1].timestamp
+        if ( age > config.PRICE_CHECK_INTERVAL_SEC*1000 ) { 
+            console.log( tkr + "No events in " + age/1000 + " secs")
+            // if mkt is a proxy then if no events for more than CRITICAL time resuscribe
+            if (tkr in ["vBTC", "vETH", "vBNB"]) {
+                console.warn("WARN: " + tkr + " possible subscription problem. check Proxy subscriptions")
+            }
+            continue 
+        }
+        // copy bucket/ will not drain it. need to flag is read
+        this.poolState[tkr].bucket = [...this.tickBuff[tkr].bucket]
+        this.tickBuff[tkr].isRead = true
+
+        // log last tick value and its timestamp
+        const csvString = `${tkr},${this.poolState[tkr].bucket[len-1].timestamp},${this.poolState[tkr].bucket[len-1].tick}\n`;
+        fs.appendFile('tickdelt.csv', csvString, (err) => { if (err) throw err });
+    }
 
 }
+
 
 
  async getPosVal(leg: Market): Promise<Number> {
@@ -554,8 +616,8 @@ fs.appendFile('cumticklog.csv', csvString, (err) => {
     // upon running eth.rotateToNextEndpoint. listeners are lost. need to re-register against new provider in ethService
     this.ethService.rotateToNextEndpoint()
     this.setupPoolListeners()
-    let tmstmp = new Date().toLocaleTimeString([], {hour12: false, timeZone: 'America/New_York'});
-    console.log(tmstmp + " SETUP: rereg listeners: " + this.ethService.provider.connection.url)
+    //let tmstmp = new Date().toLocaleTimeString([], {hour12: false, timeZone: 'America/New_York'});
+    console.log(Date.now() + " SETUP: rereg listeners: " + this.ethService.provider.connection.url)
  }
 
  async close(mkt: Market) {
@@ -575,12 +637,12 @@ fs.appendFile('cumticklog.csv', csvString, (err) => {
         this.marketMap[mkt.name].openMark =null
         }
     catch (e: any) {
-            console.error(`ERROR: FAILED CLOSE. Rotating endpoint: ${e.toString()}`)
+            console.log(`ERROR: FAILED CLOSE ${mkt.name} Rotating endpoint: ${e.toString()}`)
             //this.ethService.rotateToNextEndpoint()
             this.rotateToNextProvider()
             // one last try....
             await this.closePosition(mkt.wallet, mkt.baseToken, undefined,undefined,undefined)
-            console.log("RECOVERY: closed after rotation")
+            console.log(Date.now() + " SETUP: Recovery closed after rotation")
             throw e  
     }
  }
@@ -694,27 +756,28 @@ BKPDirectionChangeCheck():  boolean {
 // cmp unpacking date to current cycle for both to det if this data
 mktDirectionChangeCheck():  boolean {
     // wait until vETH and vBTC have data. usint timestamp as flag
-    if (!this.poolData["vETH"].lastRecord.timestamp || 
-        !this.poolData["vBTC"].lastRecord.timestamp || 
-        !this.poolData["vBNB"].lastRecord.timestamp ) { return false }
+    let btcbkt = this.poolState["vBTC"].bucket
+    let ethbkt = this.poolState["vETH"].bucket
+    let bnbbkt = this.poolState["vBNB"].bucket
+
+    if (!btcbkt.length || !ethbkt.length || !bnbbkt.length )  { return false }
 
     // check if this is new data from past cycle, exit
-    let tthres = Date.now() - config.PRICE_CHECK_INTERVAL_SEC*1000
-    if (this.poolData["vETH"].lastRecord.timestamp < tthres || 
-        this.poolData["vBTC"].lastRecord.timestamp < tthres ||
-        this.poolData["vBNB"].lastRecord.timestamp < tthres ) { return false }  
-
+    let cutoff = Date.now() - config.PRICE_CHECK_INTERVAL_SEC*1000
+    if ( btcbkt[btcbkt.length-1].timestamp < cutoff || ethbkt[ethbkt.length-1].timestamp < cutoff ||
+         bnbbkt[bnbbkt.length-1].timestamp < cutoff ) { return false }
     // if delta not same direction, ie no agreement on direction. exit
-    let ethDelta = this.poolData["vETH"].currTickDelta
-    let btcDelta = this.poolData["vBTC"].currTickDelta
-    let bnbDelta = this.poolData["vBNB"].currTickDelta
+    
+    let btcDelta = this.poolState["vBTC"].bucket[btcbkt.length-1].tick - this.poolState["vBTC"].bucket[0].tick
+    let ethDelta = this.poolState["vETH"].bucket[ethbkt.length-1].tick - this.poolState["vETH"].bucket[0].tick
+    let bnbDelta = this.poolState["vBNB"].bucket[bnbbkt.length-1].tick - this.poolState["vBNB"].bucket[0].tick
 
     const allPoitive = ethDelta > 0 && btcDelta > 0 && bnbDelta > 0;
     const allNegative = ethDelta < 0 && btcDelta < 0 && bnbDelta < 0;
 
     // all must be in agreement
     if( !(allPoitive || allNegative) ) { return false }
-    else { console.log("MKT: " + ethDelta + ", " + btcDelta + ", " + bnbDelta)}
+    else { console.log(Date.now() + " MKT: " + ethDelta + ", " + btcDelta + ", " + bnbDelta)}
 
     // zebra until proven different  
    this.holosSide = Direction.ZEBRA
@@ -746,7 +809,59 @@ mktDirectionChangeCheck():  boolean {
 //----------------------------------
 // wakeUpCheck
 //-----
+
 async wakeUpCheck(mkt: Market): Promise<boolean> { 
+    // return if no new data or no new data i.e older than 1 cyle
+    let len = this.poolState[mkt.tkr].bucket.length
+    if (len == 0) { return false }
+    let cutoff = Date.now() - config.PRICE_CHECK_INTERVAL_SEC*1000
+    if (this.poolState[mkt.tkr].bucket[len-1].timestamp < cutoff ) { return false }
+    
+    // new data in bucket. NAIVE: get the dlta btwin last and first
+    let tickDelta = this.poolState[mkt.tkr].bucket[len-1].tick - this.poolState[mkt.tkr].bucket[0].tick
+
+    // if absolute tickDelta too small dont bother
+    if (Math.abs(tickDelta) < mkt.longEntryTickDelta) { return false }
+    
+  // wake up long/short on tick inc
+    let dir = this.holosSide
+    if ( (mkt.side == Side.LONG) && (tickDelta > mkt.longEntryTickDelta) && (dir == Direction.TORO) ) {
+        let pos = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
+        let sz = mkt.startCollateral / mkt.resetMargin
+        try { 
+            if(!pos) { 
+                await this.open(mkt,sz)
+                let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
+                console.log(tstmp + " INFO: WAKEUP:" + mkt.name + " Dt:" + tickDelta)
+                return true
+             } 
+        }
+        catch(err) { console.error("OPEN FAILED in wakeUpCheck") }
+    }
+    else if ( (mkt.side == Side.SHORT) && (tickDelta < 0)
+                                       && (Math.abs(tickDelta) > mkt.shortEntryTickDelta) 
+                                       && (dir == Direction.BEAR)) {
+        let pos = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
+        let sz = mkt.startCollateral / mkt.resetMargin
+        try {
+            if(!pos) {
+                await this.open(mkt,sz)
+                let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
+                console.log(tstmp + " INFO: WAKEUP:" + mkt.name + " Dt:" + tickDelta)
+                return true
+            }
+        }
+        catch(err) { console.error("OPEN FAILED in wakeUpCheck") }
+    }
+
+    if (tickDelta) {
+        console.log(this.holosSide + ": tickDelta:" + mkt.name + ": " + tickDelta)
+    }
+
+    return false
+}
+/*
+async BKPwakeUpCheck(mkt: Market): Promise<boolean> { 
     // get the tick delta for this market 
     //let tickDelta = 0
     let tickDelta = this.poolData[mkt.tkr].currTickDelta
@@ -789,7 +904,7 @@ async wakeUpCheck(mkt: Market): Promise<boolean> {
 
     return false
 }
-
+*/
 //----------------------------------
 // trigger: roll ended
 // if sideless open both sides (twins). else only the favored side of the twins
@@ -997,12 +1112,13 @@ async solidarityKill(unfavSide: Side) {
     let pardonned = Object.values(deathrow)
                           .filter((n) => n.basisCollateral / n.startCollateral > config.TP_MIN_PARDON_RATIO )
     // cull the undesirebles
-    console.log(`INFO: ${pardonned.map(m => m.name).join(', ')}`);
+    console.log(`INFO: PARDONNED:  ${pardonned.map(m => m.name).join(', ')}`);
 
     let toExecute = deathrow.filter( (n) => !pardonned.includes(n) )
     if (toExecute.length) {
         for (const m of deathrow ) {
-            console.log("INFO: SolKill: " + m.name)
+            let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
+            console.log(tstmp + " INFO: SolKill: " + m.name)
             try { await this.close(m) }
             catch { "QRM.Close failed:" + m.name }
         }
@@ -1117,19 +1233,22 @@ async holosCheck() :Promise<boolean> {
 this.poolState
     return false
 }
-// equivalent to accountValue (pnlAdjusted value)
+/*/ equivalent to accountValue (pnlAdjusted value)
  async getMarkPnl(mkt: Market) :Promise<number> {
     // should only get here if tick, size and openMark are defined
     let markpnl = 0
     // get current position value. mkt.size is updated by this.open and this.close
-    let markPrice = Math.pow(1.0001,this.poolState[mkt.tkr].tick!)
+    use cumulative as markprice >>>>>>>>>>>>>>>>>>>>>
+    let markprice = this.poolState[mkt.tkr].cumulativeTick?.refCumTick
+
+    //let markPrice = Math.pow(1.0001,this.poolState[mkt.tkr].tick!)
     let sz = await this.perpService.getTotalPositionSize(mkt.wallet.address, mkt.baseToken)
     let pval = sz.toNumber() * markPrice
     // get start position value. updated by this.open. this.close sets it to null
     let startPval = mkt.startSize! * mkt.openMark! 
     markpnl = pval - startPval
     return markpnl
-}
+}*/
 
 //----------------------------------------------------------------------------------------------------------
 // this check also update state: peak and uret
@@ -1155,9 +1274,12 @@ async maxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
         // update uret used by qrom holos check. Used at all?? rmv
         mkt.uret = uret
         // compute real return based on mark price based pnl. can only compute if sz and tick are nonzero
-        let tk = this.poolState[mkt.tkr].tick
+        //let tk = this.poolState[mkt.tkr].tick
+        // use cumrefTick as markprice
+        
+        let tk = this.poolState[mkt.tkr].cumulativeTick?.refCumTick
         if (mkt.startSize && mkt.openMark && tk) { 
-            markPnl = await this.getMarkPnl(mkt) 
+            //markPnl = await this.getMarkPnl(mkt, tk) 
             // (collatbasis + markPnl - collatbasis)/collatbasis = 1 + markPnl/collatbasis
             mret = 1 + (markPnl)/collatbasis
         }
@@ -1172,7 +1294,7 @@ async maxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
             }
           }
           console.log(mkt.name + " cbasis:" + mkt.basisCollateral.toFixed(2) + " uret:" + uret.toFixed(4) +
-          " mret:" + (mret ?? "null") + " mpnl:" + markPnl.toFixed(4));
+          " mret:" + (mret?.toFixed(4) ?? "null") + " mpnl:" + markPnl.toFixed(4));
     } 
     return check 
   }
@@ -1227,31 +1349,20 @@ async ensureSwapListenersOK(): Promise<void> {
 //--------------------------------------------------------------------------------------
   async checksRoutine(market: Market) {
     //TODO.BIZCONT redo ensureSwapListenersOK, it will always return listerneCounter of zero coz new instance
-    await this.ensureSwapListenersOK()
+    //await this.ensureSwapListenersOK()
     // first things first.check for TP_MAX_LOSS
     if ( await this.maxLossCheckAndStateUpd(market) ) {   // have a positive => close took place. check for qrom crossing
-        this.putMktToSleep(market)
-        this.solidarityKill(market.side)
+        await this.putMktToSleep(market)
+        await this.solidarityKill(market.side)
     }
     //updat pool data
-    this.updatePoolData()
-    this.mktDirectionChangeCheck()
-    // check for direciton. updates this.Direction
-    
-    /* holos close check
-    if ( await this.holosDirectionChangeCheck() ) {   
-            // unfav is shorts in a toro and longs in a bear
-            let unfav =  (this.holosSide == Direction.TORO ? Side.SHORT : Side.LONG)
-            this.prematureSideClose(unfav)
-    }
-    */
-    // MMR. maximum margin RESET check
+    this.checkOnPoolSubEmptyBucket() //<========================== poolSubChecknPullBucket
+    this.mktDirectionChangeCheck()  // asses direction. WAKEUP deps on this
+      // MMR. maximum margin RESET check
     await this.maxMaxMarginRatioCheck(market)
-    
-    // selective wake up
     await this.wakeUpCheck(market) //wakeup only favored leg if sided mkt else both
   }
-    
+  
     // check if there is a direction change into a non-zebra beast
     async holosDirectionChangeCheck(): Promise<boolean> {
         // which pools have moved at least say 10 ticks to ignore noise
@@ -1588,5 +1699,5 @@ HIDE */
                                                        nlevrj: newlvrj, ncoll: +newcoll},} )
         }
         
-    }*/
+e    }*/
 }

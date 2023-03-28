@@ -15,9 +15,14 @@ import { Service } from "typedi"
 import config from "../configs/config.json"
 import * as fs from 'fs'
 import { tmpdir } from "os"
-import { timeStamp } from "console"
+import { time, timeStamp } from "console"
 import { Interface } from "readline"
 //import { IUniswapV3PoolEvents } from "@perp/IUniswapV3PoolEvents";
+import IUniswapV3PoolABI from '@uniswap/v3-core/artifacts/contracts/interfaces/IUniswapV3Pool.sol/IUniswapV3Pool.json'
+import { Block, StaticJsonRpcProvider, WebSocketProvider } from "@ethersproject/providers";
+   
+
+
 
 require('dotenv').config();
 //const CAP_EDGE_TICKERS = ["vSOL", "vPERP", "vFLOW", "vNEAR", "vFTM", "vAPE", "vAAVE"]
@@ -155,6 +160,9 @@ export class Arbitrageur extends BotService {
     private prevHolsSide: Direction = Direction.ZEBRA
     private poolState: { [keys: string]: PoolState } = {}
     private tickBuff: { [ticker: string]: PoolData } = {}
+    private evtSubProviderEndpoints: string[] = []
+    private evtSubEndpointsIndex: number = 0
+    private evtSubProvider!: StaticJsonRpcProvider | WebSocketProvider;
 
     //DBGpoolETHcontract: UniswapV3Pool
 
@@ -175,10 +183,12 @@ export class Arbitrageur extends BotService {
         
         this.createPoolStateMap()
         this.createPoolDataMap()
-        // setup listeners for all node endpoints
-        //not needed coz on rotate it will reregister listeners
-        //for ( let i = 0; i < this.ethService.web3Endpoints.length; ++i )
-   
+
+        this.evtSubProviderEndpoints = process.env.EVENT_SUB_ENDPOINTS!.split(",");
+        if (!this.evtSubProviderEndpoints) { throw new Error("NO Subscription Providers in .env")}
+        else { 
+            this.evtSubProvider = new ethers.providers.JsonRpcProvider(this.evtSubProviderEndpoints[this.evtSubEndpointsIndex]);
+        }
         await this.setupPoolListeners()
         // move this to checker
         const proxies = ["vBTC", "vETH", "vBNB"]
@@ -234,6 +244,33 @@ export class Arbitrageur extends BotService {
     //--------------------------------------------------------------------------------
     async setupPoolListeners(): Promise<void> {
         //for (const p of this.perpService.metadata.pools) {
+        // read subscription provider from env file
+        const currUrl = this.evtSubProviderEndpoints[this.evtSubEndpointsIndex];
+
+        for (const tkr in this.poolState) {
+            const unipool = new ethers.Contract( this.poolState[tkr].poolAddr, IUniswapV3PoolABI.abi, this.evtSubProvider)
+
+            //let unipool = this.poolState[tkr].poolContract
+            
+            // setup Swap event handler
+            unipool.on('Swap', (sender: string, recipient: string, amount0: Big, amount1: Big, sqrtPriceX96: Big, 
+                                liquidity: Big, tick: number, event: ethers.Event) =>
+                        { // Fill the bucket until the flags changes to read
+                            const timestamp = Math.floor(Date.now())
+                            this.tickBuff[tkr].bucket.push({ timestamp: timestamp, tick: tick})
+                            // if data has been read then empty tickLog
+                            //>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                            if (this.tickBuff[tkr].isRead == true) {
+                                this.tickBuff[tkr].bucket.splice(0, this.tickBuff[tkr].bucket.length - 1);
+                                this.tickBuff[tkr].isRead = false
+                            }
+                        // heartbeat
+                        //console.log(`HEARTBEAT: ${timestamp}, ${symb}`)    
+                        })
+        }   
+    }
+    async BKPsetupPoolListeners(): Promise<void> {
+        //for (const p of this.perpService.metadata.pools) {
         for (const tkr in this.poolState) {
             //const unipool = await this.perpService.createPool(this.poolStateMap[symb].poolAddr);
             let unipool = this.poolState[tkr].poolContract
@@ -255,31 +292,7 @@ export class Arbitrageur extends BotService {
         }   
     }
 
-    async BKPsetupPoolListeners(): Promise<void> {
-        //for (const p of this.perpService.metadata.pools) {
-        for (const symb in this.poolState) {
-            //const unipool = await this.perpService.createPool(this.poolStateMap[symb].poolAddr);
-            let unipool = this.poolState[symb].poolContract
-            // setup Swap event handler
-            unipool.on('Swap', (sender: string, recipient: string, amount0: Big, amount1: Big, sqrtPriceX96: Big, 
-                                liquidity: Big, tick: number, event: ethers.Event) =>
-                        { // poolDataupdate will drain tickLog
-                            const timestamp = Math.floor(Date.now())
-                            // update
-                            this.poolState[symb].prevTick = this.poolState[symb].tick
-                            this.poolState[symb].tick= tick
-                            this.tickBuff[symb].bucket.push({ timestamp: timestamp, tick: tick})
-                            // if data has been read then empty tickLog
-                            //>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-                            if (this.tickBuff[symb].isRead == true) {
-                                this.tickBuff[symb].bucket.splice(0, this.tickBuff[symb].bucket.length - 1);
-                                this.tickBuff[symb].isRead = false
-                            }
-                        // heartbeat
-                        //console.log(`HEARTBEAT: ${timestamp}, ${symb}`)    
-                        })
-        }   
-    }
+  
     createPoolStateMap() {
         for (const pool of this.perpService.metadata.pools) {
             const poolContract = this.perpService.createPool(pool.address)
@@ -501,6 +514,19 @@ export class Arbitrageur extends BotService {
     }
  }
 }*/
+
+rotateEvtSubProvider() {
+    //rotateToNextEndpoint(callback = undefined) {
+        this.evtSubProvider.removeAllListeners()
+        const fromEndpoint = this.evtSubProviderEndpoints[this.evtSubEndpointsIndex];
+        this.evtSubEndpointsIndex = (this.evtSubEndpointsIndex + 1) % this.evtSubProviderEndpoints.length;
+        const toEndpoint = this.evtSubProviderEndpoints[this.evtSubEndpointsIndex];
+        // reinstall listeners
+        this.setupPoolListeners()
+        console.log( Date.now() + " MONITOR: EvtSubProv Rotation from " + fromEndpoint + " to: " + toEndpoint)
+}
+  
+
 // DEP: poolData filled by eventListener
 // health check. 1) check foremost the proxies subscriptions are OK 2) check on the other pools
 // detect discontinuity and drain bucket 
@@ -516,7 +542,7 @@ checkOnPoolSubEmptyBucket(): void {
         // detect discontinuity of events in poolData
         let age = Date.now() - this.tickBuff[tkr].bucket[len-1].timestamp
         if ( age > config.PRICE_CHECK_INTERVAL_SEC*1000 ) { 
-            console.log( tkr + "No events in " + age/1000 + " secs")
+            console.log( "MONITOR: " + tkr + ": No events in " + age/60000 + " mins")
             // if mkt is a proxy then if no events for more than CRITICAL time resuscribe
             if (tkr in ["vBTC", "vETH", "vBNB"]) {
                 console.warn("WARN: " + tkr + " possible subscription problem. check Proxy subscriptions")
@@ -531,10 +557,20 @@ checkOnPoolSubEmptyBucket(): void {
         const csvString = `${tkr},${this.poolState[tkr].bucket[len-1].timestamp},${this.poolState[tkr].bucket[len-1].tick}\n`;
         fs.appendFile('tickdelt.csv', csvString, (err) => { if (err) throw err });
     }
+    // check tail of the file how long since last timestamp
+    const csvFilePath = 'tickdelt.csv';
+    const csvContents = fs.readFileSync(csvFilePath, 'utf-8');
+    const csvRows = csvContents.split('\n');
+    const lastRowString = csvRows[csvRows.length - 2]; // Subtract 2 to ignore empty last line
 
+    // Extract the timestamp value from the last row
+    const lastRowValues = lastRowString.split(',');
+    const ts = parseInt(lastRowValues[1])
+    const age = Date.now() - ts
+    if ( (age) > 1000 * config.MON_MAX_TIME_WITH_NO_EVENTS_SEC ){
+        this.rotateEvtSubProvider()
+    }
 }
-
-
 
  async getPosVal(leg: Market): Promise<Number> {
     let pv =  (await this.perpService.getTotalPositionValue(leg.wallet.address, leg.baseToken)).toNumber()
@@ -612,7 +648,11 @@ checkOnPoolSubEmptyBucket(): void {
  // close sort of dtor. do all bookeeping and cleanup here
  //REFACTOR: this.close(mkt) will make it easier for functinal styling
  // onClose startCollateral == basisCollateral == settledCollatOnClose
- rotateToNextProvider() {
+// re-implement provderRotationLogic
+
+
+
+ BKProtateToNextProvider() {
     // upon running eth.rotateToNextEndpoint. listeners are lost. need to re-register against new provider in ethService
     this.ethService.rotateToNextEndpoint()
     this.setupPoolListeners()
@@ -638,8 +678,7 @@ checkOnPoolSubEmptyBucket(): void {
         }
     catch (e: any) {
             console.log(`ERROR: FAILED CLOSE ${mkt.name} Rotating endpoint: ${e.toString()}`)
-            //this.ethService.rotateToNextEndpoint()
-            this.rotateToNextProvider()
+            this.ethService.rotateToNextEndpoint()
             // one last try....
             await this.closePosition(mkt.wallet, mkt.baseToken, undefined,undefined,undefined)
             console.log(Date.now() + " SETUP: Recovery closed after rotation")

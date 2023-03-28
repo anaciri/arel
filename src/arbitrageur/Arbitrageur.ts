@@ -167,7 +167,7 @@ export class Arbitrageur extends BotService {
     //DBGpoolETHcontract: UniswapV3Pool
 
     async setup(): Promise<void> {
-        this.log.jinfo({ event: "Setup ONE.D",})
+        
        // Print the names and values of all the variables that match the pattern 'v[A-Z]{3,}'
         const pattern = /^v[A-Z]{3,}/  
         let vk = Object.entries(process.env).filter(([k])=> pattern.test(k))
@@ -194,10 +194,11 @@ export class Arbitrageur extends BotService {
         const proxies = ["vBTC", "vETH", "vBNB"]
         for (const tkr of proxies) {
             let subs = this.poolState[tkr].poolContract.filters.Swap()
-            console.log("SETUP: proxy " + tkr + ": " + subs.topics)
+            console.log("SETUP: proxy topics " + tkr + ": " + subs.topics)
         }
-
         await this.createMarketMap()
+        console.log("CROC: sub n tx prov: " + this.evtSubProvider.connection.url + ","
+                                            + this.ethService.provider.connection.url)
     }
 
     async DBG_setupPoolListeners(): Promise<void> {
@@ -541,8 +542,9 @@ checkOnPoolSubEmptyBucket(): void {
 
         // detect discontinuity of events in poolData
         let age = Date.now() - this.tickBuff[tkr].bucket[len-1].timestamp
-        if ( age > config.PRICE_CHECK_INTERVAL_SEC*1000 ) { 
-            console.log( "MONITOR: " + tkr + ": No events in " + age/60000 + " mins")
+        let multiplier = 5 // to reduce noice
+        if ( age > multiplier * config.PRICE_CHECK_INTERVAL_SEC*1000 ) { 
+            console.log( "MONITOR: " + tkr + ": No events in " + (age/60000).toFixed() + " mins")
             // if mkt is a proxy then if no events for more than CRITICAL time resuscribe
             if (tkr in ["vBTC", "vETH", "vBNB"]) {
                 console.warn("WARN: " + tkr + " possible subscription problem. check Proxy subscriptions")
@@ -558,18 +560,23 @@ checkOnPoolSubEmptyBucket(): void {
         fs.appendFile('tickdelt.csv', csvString, (err) => { if (err) throw err });
     }
     // check tail of the file how long since last timestamp
-    const csvFilePath = 'tickdelt.csv';
-    const csvContents = fs.readFileSync(csvFilePath, 'utf-8');
-    const csvRows = csvContents.split('\n');
-    const lastRowString = csvRows[csvRows.length - 2]; // Subtract 2 to ignore empty last line
+    let csvContents = ''
+    try {
+        csvContents = fs.readFileSync('tickdelt.csv', 'utf-8')
+        const csvRows = csvContents.split('\n');
+        const lastRowString = csvRows[csvRows.length - 2]; // Subtract 2 to ignore empty last line
 
-    // Extract the timestamp value from the last row
-    const lastRowValues = lastRowString.split(',');
-    const ts = parseInt(lastRowValues[1])
-    const age = Date.now() - ts
-    if ( (age) > 1000 * config.MON_MAX_TIME_WITH_NO_EVENTS_SEC ){
-        this.rotateEvtSubProvider()
-    }
+        // Extract the timestamp value from the last row
+        const lastRowValues = lastRowString.split(',');
+        const ts = parseInt(lastRowValues[1])
+        const age = Date.now() - ts
+        if ( (age) > 1000 * config.MON_MAX_TIME_WITH_NO_EVENTS_SEC ){
+            this.rotateEvtSubProvider()
+        }
+    } catch (err: any) {
+        if (err.code === 'ENOENT') { console.log('File not found, skipping rotation check.');
+        } else { throw err; }
+      }
 }
 
  async getPosVal(leg: Market): Promise<Number> {
@@ -814,9 +821,9 @@ mktDirectionChangeCheck():  boolean {
     const allPoitive = ethDelta > 0 && btcDelta > 0 && bnbDelta > 0;
     const allNegative = ethDelta < 0 && btcDelta < 0 && bnbDelta < 0;
 
-    // all must be in agreement
+    // all must be in agreement. else return
+    console.log(Date.now() + " MKT: " + this.holosSide + ":" + btcDelta + ", " + ethDelta + ", " + bnbDelta)
     if( !(allPoitive || allNegative) ) { return false }
-    else { console.log(Date.now() + " MKT: " + ethDelta + ", " + btcDelta + ", " + bnbDelta)}
 
     // zebra until proven different  
    this.holosSide = Direction.ZEBRA

@@ -262,7 +262,9 @@ export class Arbitrageur extends BotService {
                             // if data has been read then empty tickLog
                             //>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
                             if (this.tickBuff[tkr].isRead == true) {
+                                // keep the last tick as reference
                                 this.tickBuff[tkr].bucket.splice(0, this.tickBuff[tkr].bucket.length - 1);
+                                this.tickBuff[tkr].bucket.pop()
                                 this.tickBuff[tkr].isRead = false
                             }
                         // heartbeat
@@ -302,7 +304,7 @@ export class Arbitrageur extends BotService {
                 poolAddr: pool.address,
                 poolContract: poolContract,
                 tick:0,  // otherwise wakeup check will choke
-                prevTick: 0,
+                prevTick: undefined,
                 cumulativeTick: null
               };
         }
@@ -574,7 +576,7 @@ checkOnPoolSubEmptyBucket(): void {
             this.rotateEvtSubProvider()
         }
     } catch (err: any) {
-        if (err.code === 'ENOENT') { console.log('File not found, skipping rotation check.');
+        if (err.code === 'ENOENT') { console.log('tick csv empty, skipping rotation check.');
         } else { throw err; }
       }
 }
@@ -767,40 +769,11 @@ async rollEndTest(market: Market): Promise<boolean> {
 //----------------------------------
 // mktDirection
 //----------------------------------
-BKPDirectionChangeCheck():  boolean {
-   // guesstimate mkt direction using btc-eth as a proxy. if dont have prvTick for either, cant guess direction
-   if (this.poolState["vETH"].prevTick == 0 || this.poolState["vBTC"].prevTick == 0) { return false }
 
-   let ethd = this.poolState["vETH"].tick!-this.poolState["vETH"].prevTick!
-   let btcd = this.poolState["vBTC"].tick!-this.poolState["vBTC"].prevTick!
-   // if ethd and btcd dont have the same sign, no guess exit
-   if (ethd * btcd < 0) { return false }
-
-   //let dir: Direction = Direction.ZEBRA
-   let dir = this.holosSide
-  // if both deltas are positive and each > TP_DIR_MIN_TICK_DELTA return TORO
-   if ( (ethd > 0) && (btcd > 0) && (ethd > config.TP_DIR_MIN_TICK_DELTA) && (btcd > config.TP_DIR_MIN_TICK_DELTA) ) {
-       this.prevHolsSide = this.holosSide
-       this.holosSide = Direction.TORO
-       let tmstmp = new Date().toLocaleTimeString("en-US", {timeZone: "America/New_York", hour12: false});
-       console.log(tmstmp + ": INFO: ethbit Dticks: " + ethd + ", " + btcd)
-       return true
-   }
-   // if both are negative and absolute value of each > TP_MIN_TICK_DELTA then BEAR
-   else if ( (ethd < 0) && (btcd < 0) && (Math.abs(ethd) > config.TP_DIR_MIN_TICK_DELTA)
-                                      && (Math.abs(btcd) > config.TP_DIR_MIN_TICK_DELTA) ) {
-       this.prevHolsSide = this.holosSide
-       this.holosSide = Direction.BEAR
-       let tmstmp = new Date().toLocaleTimeString("en-US", {timeZone: "America/New_York", hour12: false});
-       console.log(tmstmp + ": INFO: ethbit Dticks: " + ethd + ", " + btcd)
-       return true
-   }
-   return false
-}
 
 // determine from beth mkt direction. input poolData from updatePoolData 
 // cmp unpacking date to current cycle for both to det if this data
-mktDirectionChangeCheck():  boolean {
+BKPmktDirectionChangeCheck():  boolean {
     // wait until vETH and vBTC have data. usint timestamp as flag
     let btcbkt = this.poolState["vBTC"].bucket
     let ethbkt = this.poolState["vETH"].bucket
@@ -813,6 +786,7 @@ mktDirectionChangeCheck():  boolean {
     if ( btcbkt[btcbkt.length-1].timestamp < cutoff || ethbkt[ethbkt.length-1].timestamp < cutoff ||
          bnbbkt[bnbbkt.length-1].timestamp < cutoff ) { return false }
     // if delta not same direction, ie no agreement on direction. exit
+    // if one single entry in bucket you will get 0
     
     let btcDelta = this.poolState["vBTC"].bucket[btcbkt.length-1].tick - this.poolState["vBTC"].bucket[0].tick
     let ethDelta = this.poolState["vETH"].bucket[ethbkt.length-1].tick - this.poolState["vETH"].bucket[0].tick
@@ -851,6 +825,59 @@ mktDirectionChangeCheck():  boolean {
        return true
    }
    return false
+}
+
+mktDirectionChangeCheck(): void {
+    // wait until vETH and vBTC have data. usint timestamp as flag
+    let btcbkt = this.poolState["vBTC"].bucket
+    let ethbkt = this.poolState["vETH"].bucket
+    let bnbbkt = this.poolState["vBNB"].bucket
+
+    //if (!btcbkt.length || !ethbkt.length || !bnbbkt.length )  { return }
+    let btcDelta, ethDelta, bnbDelta
+//    let btcDelta = this.poolState["vBTC"].bucket[btcbkt.length-1].tick - this.poolState["vBTC"].bucket[0].tick
+  //  let ethDelta = this.poolState["vETH"].bucket[ethbkt.length-1].tick - this.poolState["vETH"].bucket[0].tick
+    //let bnbDelta = this.poolState["vBNB"].bucket[bnbbkt.length-1].tick - this.poolState["vBNB"].bucket[0].tick
+
+    // if there is only one tick. during slock markets. compare latest tick with penultime tick
+    // zero the delta if older than a cyle
+    let cutoff = Date.now() - config.PRICE_CHECK_INTERVAL_SEC*1000
+    if ( !btcbkt.length || (btcbkt[btcbkt.length-1].timestamp < cutoff) ) { btcDelta = 0 }
+    else if (btcbkt.length == 1) {  // use prevtick if butcket has only one entry. slow market or tight cycle
+        if (this.poolState["vBTC"].prevTick == undefined) { this.poolState["vBTC"].prevTick = btcbkt[0].tick }
+        btcDelta = this.poolState["vBTC"].bucket[0].tick - this.poolState["vBTC"].prevTick
+    }
+    else { btcDelta = this.poolState["vBTC"].bucket[btcbkt.length-1].tick - this.poolState["vBTC"].bucket[0].tick }
+
+    // repeat for eth
+    if( !ethbkt.length || (ethbkt[ethbkt.length-1].timestamp < cutoff) ) { ethDelta = 0 }
+    else if (ethbkt.length == 1) {
+        if (this.poolState["vETH"].prevTick == undefined) { this.poolState["vETH"].prevTick = ethbkt[0].tick }
+        ethDelta = this.poolState["vETH"].bucket[0].tick - this.poolState["vETH"].prevTick
+    }
+    else { ethDelta = this.poolState["vETH"].bucket[ethbkt.length-1].tick - this.poolState["vETH"].bucket[0].tick }
+
+    // repeat for bnb
+    if ( !bnbbkt.length || (bnbbkt[bnbbkt.length-1].timestamp < cutoff) ) { bnbDelta = 0 }
+    else if (bnbbkt.length == 1) {  
+        if (this.poolState["vBNB"].prevTick == undefined) { this.poolState["vBNB"].prevTick = bnbbkt[0].tick }
+        bnbDelta = this.poolState["vBNB"].bucket[0].tick - this.poolState["vBNB"].prevTick
+    }
+    else { bnbDelta = this.poolState["vBNB"].bucket[bnbbkt.length-1].tick - this.poolState["vBNB"].bucket[0].tick }
+
+       // count how many deltas  > config.TP_DIR_MIN_TICK_DELTA
+    let deltas = [btcDelta, ethDelta, bnbDelta]
+    let jmps = deltas.filter(delta => Math.abs(delta) > config.TP_DIR_MIN_TICK_DELTA)
+    // zebra until proven different  
+   this.holosSide = Direction.ZEBRA
+   // lenght > 1 i.e 2 out of 3 until implement 30-1minute weights geometric return 
+    if (jmps.length > 1 && jmps.every(delta => delta > 0)) { 
+        this.holosSide = Direction.TORO } 
+    else if (jmps.length > 1 && jmps.every(delta => delta < 0)) { 
+        this.holosSide = Direction.BEAR }
+
+    // all must be in agreement. else return
+    console.log(Date.now() + " MKT: " + this.holosSide + ":" + btcDelta + ", " + ethDelta + ", " + bnbDelta)
 }
 //----------------------------------
 // wakeUpCheck

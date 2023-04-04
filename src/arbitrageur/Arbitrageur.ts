@@ -1098,7 +1098,7 @@ async wakeUpCheck(mkt: Market): Promise<boolean> {
     let ts = this.poolState[mkt.tkr].cycleTickDeltaTs
     let now = Date.now()
     let cutoff = now - config.PRICE_CHECK_INTERVAL_SEC*1000
-if (config.TRACE_FLAG) { console.log(now + " TRACE: wakeUpCheck: " + mkt.tkr + " ctickDlt: " + ts + " cutoff: " + cutoff + " " + age) }
+if (config.TRACE_FLAG) { console.log(now + " TRACE: wakeUpCheck: " + mkt.tkr + " ctickDlt: " + ts + " cutoff: " + cutoff ) }
     if (this.poolState[mkt.tkr].cycleTickDeltaTs < cutoff ) { return false }
     
     let tickDelta = this.poolState[mkt.tkr].cycleTickDelta

@@ -909,7 +909,14 @@ computeWeightedArithAvrg(cticks: TickData[], cweights: number[]): number {
     return sum / weightSum;
   }
   
-  
+  // Butils.ts
+  // check if data is new since last routine cyle
+  newDataAvailable(ts: Timestamp): boolean {
+    let now = Date.now()
+    let cutoff = now - config.PRICE_CHECK_INTERVAL_SEC*1000
+    if (ts > cutoff) { return true }
+    return false
+  }
 
  async close(mkt: Market) {
     if (config.DEBUG_FLAG) {
@@ -1070,10 +1077,16 @@ BKPmktDirectionChangeCheck(): void {
 // consumes data filled by processEventInpput
 mktDirectionChangeCheck(): void {
  // recall cycleDelta is the 1min-weighted-tick - 30min-weighted-basis tick. if 
-    let btcDelta = this.poolState["vBTC"].cycleTickDelta
-    let ethDelta = this.poolState["vETH"].cycleTickDelta
-    let bnbDelta = this.poolState["vBNB"].cycleTickDelta
-
+    //check if new data is available
+    let btcDelta = 0, ethDelta = 0, bnbDelta = 0
+    let ts = this.poolState["vBTC"].cycleTickDeltaTs
+    if (this.newDataAvailable(this.poolState["vBTC"].cycleTickDeltaTs) ) { 
+        btcDelta = this.poolState["vBTC"].cycleTickDelta }
+    if (this.newDataAvailable(this.poolState["vETH"].cycleTickDeltaTs) ) {
+        ethDelta = this.poolState["vETH"].cycleTickDelta }
+    if (this.newDataAvailable(this.poolState["vBNB"].cycleTickDeltaTs) ) {
+        bnbDelta = this.poolState["vBNB"].cycleTickDelta }
+    
     // count how many deltas  > config.TP_DIR_MIN_TICK_DELTA
     let deltas = [btcDelta, ethDelta, bnbDelta]
     //trace

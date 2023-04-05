@@ -23,6 +23,10 @@ import { Block, StaticJsonRpcProvider, WebSocketProvider } from "@ethersproject/
 import { Mutex } from "async-mutex";
 import { checkServerIdentity } from "tls"
 import { dbgnow } from "../dbg/crocDebug"
+import { parse } from 'csv-parse';
+
+const jsonfile = require('jsonfile');
+
 
 let dbgcTicks: TickData[] = []; // declare variable outside if statement
 let dbgmTicks: TickData[] = [];
@@ -943,7 +947,8 @@ computeWeightedArithAvrg(cticks: TickData[], cweights: number[]): number {
         mkt.idxBasisCollateral = scoll
         mkt.startCollateral = scoll
         //reset peakTick. eventInput will set it again
-        this.poolState[mkt.tkr].wpeakTick = 0
+        mkt.wBasisCollateral = scoll
+        this.poolState[mkt.tkr].wpeakTick = scoll
 
         // null out mkt.size and mkt.basis
         this.marketMap[mkt.name].startSize = null
@@ -975,8 +980,66 @@ async closeMkt( mktName: string) {
             throw e
         }
  } 
+ 
+ async updateConfig() {
+   // Read CSV and store values in a dictionary
+   const collateralValues: Record<string, number> = {};
+   // wait for the csv to be generated
+   await this.genTWreport()
+ 
+   const csvData = fs.readFileSync('twreport.csv');
+   parse(csvData, {}, (err, rows) => {
+     if (err) {
+       console.error(err);
+       return;
+     }
+ 
+     for (const row of rows) {
+       if (row[3] === 'true') {
+         collateralValues[row[0]] = this.marketMap[row[0]].wBasisCollateral;
+       } else {
+         collateralValues[row[0]] = parseFloat(row[2]);
+       }
+     }
+ 
+     // Open config file and modify START_COLLATERAL values based on dictionary values
+     const configData = jsonfile.readFileSync('./src/configs/config.json');
+     for (const key in configData['MARKET_MAP']) {
+       if (key in collateralValues) {
+         configData['MARKET_MAP'][key]['START_COLLATERAL'] = collateralValues[key];
+       }
+     }
+ 
+     jsonfile.writeFileSync('config-draft.json', configData, { spaces: 4 });
+   });
+ }
+ 
+ 
+// dont hang around too much
+ async genTWreport() {
+    const writeStream = fs.createWriteStream('twreport.csv');
+    writeStream.write(`name, startCollat, endCollat, open\n`);
+  
+    for (const m of Object.values(this.marketMap)) {
+      let open = await this.isNonZeroPos(m) ? "true" : "false";
+      writeStream.write(`${m.name}, ${m.initCollateral}, ${m.idxBasisCollateral}, ${open}\n`);
+    }
+  
+    writeStream.on('finish', () => {
+      console.log('Report written successfully.');
+      this.updateConfig()
+      process.exit(0);
+    });
+  
+    writeStream.on('error', (err) => {
+      console.error(`Failed to write report: ${err}`);
+      process.exit(1);
+    });
+  
+    writeStream.end();
+  }
 
-  genTWreport() {
+  BKPgenTWreport() {
     const writeStream = fs.createWriteStream('twreport.csv');
     writeStream.write(`name, startCollat, endCollat, isSettled\n`);
   
@@ -1142,8 +1205,8 @@ if (config.TRACE_FLAG) { console.log(now + " TRACE: wakeUpCheck: " + mkt.tkr + "
         try { 
             if(!pos) { 
                 await this.open(mkt,sz)
-                //let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
-                console.log(Date.now() + " INFO: WAKEUP:" + mkt.name + " Dt:" + tickDelta)
+                let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
+                console.log(tstmp + " INFO: WAKEUP:" + mkt.name + " Dt:" + tickDelta)
                 return true
              } 
         }
@@ -1193,8 +1256,8 @@ async BKPwakeUpCheck(mkt: Market): Promise<boolean> {
         try { 
             if(!pos) { 
                 await this.open(mkt,sz)
-                //let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
-                console.log(Date.now() + " INFO: WAKEUP:" + mkt.name + " Dt:" + tickDelta)
+                let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
+                console.log(tstmp + " INFO: WAKEUP:" + mkt.name + " Dt:" + tickDelta)
                 return true
              } 
         }
@@ -1208,8 +1271,8 @@ async BKPwakeUpCheck(mkt: Market): Promise<boolean> {
         try {
             if(!pos) {
                 await this.open(mkt,sz)
-                //let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
-                console.log(Date.now() + " INFO: WAKEUP:" + mkt.name + " Dt:" + tickDelta)
+                let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
+                console.log(tstmp + " INFO: WAKEUP:" + mkt.name + " Dt:" + tickDelta)
                 return true
             }
         }
@@ -1510,8 +1573,8 @@ async putMktToSleep(mkt: Market) {
          let oldStartCol = mkt.idxBasisCollateral
             let settledCol = mkt.startCollateral //updated in this.close
             let ret = 1 + (settledCol-oldStartCol)/oldStartCol
-            //let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
-    console.log(Date.now() + ": INFO: Kill " + mkt.name + ", stldcoll: " + settledCol.toFixed(4) + " rret: " + ret.toFixed(2))
+            let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
+    console.log(tstmp + ": INFO: Kill " + mkt.name + ", stldcoll: " + settledCol.toFixed(4) + " rret: " + ret.toFixed(2))
 }
 
 async holosCheck() :Promise<boolean> {
@@ -1608,8 +1671,8 @@ async maxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
             }
           }
           */
-          console.log(mkt.name + " cbasis:" + mkt.idxBasisCollateral.toFixed(2) + "idx uret: " + uret.toFixed(4) +
-          " wret:" + wret.toFixed(4));
+          console.log(mkt.name + " icbasis:" + mkt.idxBasisCollateral.toFixed(2) + "idx uret: " + uret.toFixed(4) +
+          " wret:" + wret.toFixed(4) + " iwbasis:" + mkt.idxBasisCollateral.toFixed(2));
     } 
     return check 
   }
@@ -1649,7 +1712,7 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
               this.marketMap[mkt.name].openMark = twappx/mkt.startSize
             }
           }
-          console.log(mkt.name + " cbasis:" + mkt.idxBasisCollateral.toFixed(2) + "IPX uret:" + uret.toFixed(4) +
+          console.log(mkt.name + " icbasis:" + mkt.idxBasisCollateral.toFixed(2) + "i uret:" + uret.toFixed(4) +
           " mret:" + (mret?.toFixed(4) ?? "null") + " mpnl:" + markPnl.toFixed(4));
     } 
     return check 
@@ -1681,9 +1744,9 @@ async maxMaxMarginRatioCheck(market: Market) {
 
     pv = (await this.perpService.getTotalAbsPositionValue(market.wallet.address)).toNumber()
     let newmr = market.idxBasisCollateral/pv
-    //let tmstmp = new Date().toLocaleTimeString([], {hour12: false, timeZone: 'America/New_York'});
-    console.log(Date.now() + " INFO: tick, indx, market Price: " + tickPrice + " " + idxPrice + " " + mktPrice)
-    console.log(Date.now() + " INFO: MARGIN RESET: " + market.name + " prv mr:" + mr.toFixed() + " nu mr:" + newmr.toFixed() + " sz:" + sz)
+    let tstmp = new Date().toLocaleTimeString([], {hour12: false, timeZone: 'America/New_York'});
+    console.log(tstmp + " INFO: tick, indx, market Price: " + tickPrice + " " + idxPrice + " " + mktPrice)
+    console.log(tstmp + " INFO: MARGIN RESET: " + market.name + " prv mr:" + mr.toFixed() + " nu mr:" + newmr.toFixed() + " sz:" + sz)
     }
 }
 //--------------------------------------------------------------------------------------

@@ -980,7 +980,7 @@ async closeMkt( mktName: string) {
             throw e
         }
  } 
- 
+ /*
  async updateConfig() {
    // Read CSV and store values in a dictionary
    const collateralValues: Record<string, number> = {};
@@ -1012,7 +1012,7 @@ async closeMkt( mktName: string) {
  
      jsonfile.writeFileSync('config-draft.json', configData, { spaces: 4 });
    });
- }
+ }*/
  
  
 // dont hang around too much
@@ -1022,12 +1022,13 @@ async closeMkt( mktName: string) {
   
     for (const m of Object.values(this.marketMap)) {
       let open = await this.isNonZeroPos(m) ? "true" : "false";
+      //let finalcollat = open ? this.poolState[m] : m.idxBasisCollateral
       writeStream.write(`${m.name}, ${m.initCollateral}, ${m.idxBasisCollateral}, ${open}\n`);
     }
   
     writeStream.on('finish', () => {
       console.log('Report written successfully.');
-      this.updateConfig()
+//      this.updateConfig()
       process.exit(0);
     });
   
@@ -1150,7 +1151,7 @@ BKPmktDirectionChangeCheck(): void {
         this.holosSide = Direction.BEAR }
 
     // all must be in agreement. else return
-    console.log(Date.now() + " MKT: " + this.holosSide + ":" + btcDelta.toFixed() + ", " + ethDelta.toFixed() + ", " + bnbDelta.toFixed())
+    console.log(Date.now() + " MKT: " + this.holosSide + ":" + btcDelta.toFixed(4) + ", " + ethDelta.toFixed(4) + ", " + bnbDelta.toFixed(4))
 }
 // consumes data filled by processEventInpput
 mktDirectionChangeCheck(): void {
@@ -1601,17 +1602,17 @@ this.poolState
     let wpeakpx = Math.pow(1.0001, peaktk)
     let siz = await this.perpService.getTotalPositionSize(mkt.wallet.address, mkt.baseToken)
 
-    // sz negative for short ????
+    // sz negative for short
     let sz = Math.abs(siz.toNumber())
 
     //let pval = sz.toNumber() * markPrice
     // get start position value. updated by this.open. this.close sets it to null
     //let startPval = mkt.startSize! * mkt.openMark! 
     //wpnl = pval - startPval
-if(config.TRACE_FLAG) { console.log(Date.now() + "wcol: " + mkt.name + " currpx: " + currpx.toFixed(4) + " wpeakpx: " + wpeakpx.toFixed(4) + " sz: " + sz.toFixed())}
    // pnl = sz*(wcp - peakPrice)
     wpnl = sz*( currpx- wpeakpx)
     let currCollatVal = mkt.idxBasisCollateral + wpnl
+if(config.TRACE_FLAG) { console.log(Date.now() + "wcol: " + mkt.name + " currpx: " + currpx.toFixed(4) + " wpeakpx: " + wpeakpx.toFixed(4) + " sz: " + sz.toFixed())}
     console.log(Date.now() + " wcol: " + mkt.name + " currcol: " + currCollatVal.toFixed(4) + " wpnl: " + wpnl.toFixed(4) )
     return currCollatVal
 }
@@ -1639,8 +1640,8 @@ async maxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
         const icol = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
     
         //peak tick updated by eventInput procesor. they should match
-        if (icol > collatbasis) {  mkt.idxBasisCollateral = icol }
-        if (wcol > wcollatbasis) {  mkt.wBasisCollateral = wcol }
+        if (icol > mkt.idxBasisCollateral) { mkt.idxBasisCollateral = icol }
+        if (wcol > mkt.wBasisCollateral) { mkt.wBasisCollateral = wcol }
 
          let uret = 1 + (icol - collatbasis)/collatbasis
          let wret = 1 + (wcol - wcollatbasis)/wcollatbasis
@@ -1671,8 +1672,8 @@ async maxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
             }
           }
           */
-          console.log(mkt.name + " icbasis:" + mkt.idxBasisCollateral.toFixed(2) + "idx uret: " + uret.toFixed(4) +
-          " wret:" + wret.toFixed(4) + " iwbasis:" + mkt.idxBasisCollateral.toFixed(2));
+          console.log(mkt.name + " ibasis:" + mkt.idxBasisCollateral.toFixed(2) + "idx uret: " + uret.toFixed(4) +
+          " wret:" + wret.toFixed(4) + " wbasis:" + mkt.wBasisCollateral.toFixed(2));
     } 
     return check 
   }

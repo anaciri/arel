@@ -1732,12 +1732,13 @@ async maxMaxMarginRatioCheck(market: Market) {
     // compute additional size to bring down the margin ratio to reset value
     // mr = (collatBasis)/positionValue=positionSize*price => positionSize = collatBasis/price*mr
     
-    let tickPrice = Math.pow(1.0001, tick!)
-    let idxPrice = (await this.perpService.getIndexPrice(market.tkr)).toNumber()
-    let mktPrice = (await this.perpService.getMarketPrice(market.tkr)).toNumber()
+        let tickPrice = Math.pow(1.0001, tick!)
+        let idxPrice = (await this.perpService.getIndexPrice(market.tkr)).toNumber()
+        let mktPrice = (await this.perpService.getMarketPrice(market.tkr)).toNumber()
 
     // tick price results in mr higher than reset. go for lowest price
-    let price = Math.min(tickPrice, idxPrice, mktPrice)
+    // BUG: pick min for long and max for short. for now just use the mark price
+    let price = mktPrice
 
     let sz  = market.idxBasisCollateral/price*market.resetMargin
     // add to the position and recompute margin ratio
@@ -1746,6 +1747,7 @@ async maxMaxMarginRatioCheck(market: Market) {
     pv = (await this.perpService.getTotalAbsPositionValue(market.wallet.address)).toNumber()
     let newmr = market.idxBasisCollateral/pv
     let tstmp = new Date().toLocaleTimeString([], {hour12: false, timeZone: 'America/New_York'});
+    console.warn("mr trigger was based on index price")
     console.log(tstmp + " INFO: tick, indx, market Price: " + tickPrice + " " + idxPrice + " " + mktPrice)
     console.log(tstmp + " INFO: MARGIN RESET: " + market.name + " prv mr:" + mr.toFixed() + " nu mr:" + newmr.toFixed() + " sz:" + sz)
     }

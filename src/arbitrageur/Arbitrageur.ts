@@ -263,8 +263,45 @@ export class Arbitrageur extends BotService {
     
 
     
-
     async setup(): Promise<void> {
+        
+        // Print the names and values of all the variables that match the pattern 'v[A-Z]{3,}'
+         const pattern = /^v[A-Z]{3,}/  
+         let vk = Object.entries(process.env).filter(([k])=> pattern.test(k))
+        
+         for (const [key, value] of vk) { this.pkMap.set(key, value!);}
+           
+         // initilize pkMap
+        let wlts = transformValues(this.pkMap, v => this.ethService.privateKeyToWallet(v))
+         // needed by BotService.retrySendTx
+         await this.createNonceMutex([...wlts.values()])
+         // initialize data structures needed for evt buffering and processing i.e evtBuffer and PoolState
+         // 1. get enabled markets from config
+         await this.createMarketMap()
+         // 2. allocate memory for evtBuffers for enabled tickers
+         //this.initDataStructs()
+         //this.createPoolStateMap() //<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<--- rename to initDataStruc
+ 
+         
+         this.evtSubProviderEndpoints = process.env.EVENT_SUB_ENDPOINTS!.split(",");
+         if (!this.evtSubProviderEndpoints) { throw new Error("NO Subscription Providers in .env")}
+         else { 
+             this.evtSubProvider = new ethers.providers.JsonRpcProvider(this.evtSubProviderEndpoints[this.evtSubEndpointsIndex]);
+         }
+         /*
+         await this.setupPoolListeners()
+         // move this to checker
+         const proxies = ["vBTC", "vETH", "vBNB"]
+         for (const tkr of proxies) {
+             let subs = this.poolState[tkr].poolContract.filters.Swap()
+             console.log("SETUP: proxy topics " + tkr + ": " + subs.topics)
+         }
+         
+         console.log("CROC: EvtSubProv: " + this.evtSubProvider.connection.url)
+         
+       */
+     }
+    async BKPsetup(): Promise<void> {
         
        // Print the names and values of all the variables that match the pattern 'v[A-Z]{3,}'
         const pattern = /^v[A-Z]{3,}/  
@@ -644,7 +681,7 @@ if (config.TRACE_FLAG) { console.log(" TRACE: evt: " + tkr  + " " + timestamp + 
                 Object.values(this.marketMap).map(async market => {
                     try {
                         //await this.arbitrage(market)
-                        await this.checksRoutine(market)
+                        await this.spiRoutine(market)
                     } catch (err: any) { await this.jerror({ event: "ArbitrageError", params: { err } })
                     }
                 }),
@@ -654,38 +691,7 @@ if (config.TRACE_FLAG) { console.log(" TRACE: evt: " + tkr  + " " + timestamp + 
     }
 
     
-//------------------
-// updatePoolData() accumulates tick changes for a given TP_TICK_TIME_INTERVAL, needed to gestimate if there is unidirection
- //------------------
- /*
- BKPupdatePoolData(): void {
- for (const symb in this.poolState) {   
-    if (this.poolData[symb].bucket.length == 0) { continue }
-    if (this.poolData[symb].bucket.length == 0) { 
-        console.error(symb + " DEBUG: should not be here" + this.poolData[symb].lastRecord?.tick)
-        //victim of race condition. skip and see if next round will work
-        continue
-    }
-    // get tick delta from the tickBuff. Diff btw last and first in the buffer
-    const len = this.poolData[symb].bucket.length
-    const tickDelta = this.poolData[symb].bucket[len-1].tick! - this.poolData[symb].bucket[0].tick!
-    // set flag to let handler to reset tickLog
-    
-    this.poolData[symb].lastRecord.tick = tickDelta
-    this.poolData[symb].lastRecord.timestamp = Date.now()
-    //TODO.DEBT HACK work aournd the race condition. wrap in a setter/getter with mutex
-    // flag handler that ok to discard current buffer and start a new one (or throw old entries)
-    this.poolData[symb].isRead = true
 
-    //this.poolData[symb].prevTickDelta = this.poolData[symb].currTickDelta
-    this.poolData[symb].currTickDelta = tickDelta
-    
-    if (Math.abs(tickDelta) > config.TP_NOISE_MIN_TICK_DLTA) {
-        const csvString = `${symb},${Date.now()},${tickDelta}\n`;
-        fs.appendFile('tickdelt.csv', csvString, (err) => { if (err) throw err });
-    }
- }
-}*/
 
 rotateEvtSubProvider() {
     //rotateToNextEndpoint(callback = undefined) {
@@ -1677,80 +1683,37 @@ async maxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
     } 
     return check 
   }
-async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
-    // skip if market inactive
-    let check = false ; let markPnl = 0 ; let mret = null
-    let leg = this.marketMap[mkt.name]
-    if (await this.isNonZeroPos(leg)) { 
-        // collatbasis is the peak colateral
-        let collatbasis = mkt.idxBasisCollateral
-        const col = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
-        
-        let uret = 1 + (col - collatbasis)/collatbasis
-        if (uret < config.TP_MAX_ROLL_LOSS ) { check = true  }// mark check positive 
 
-        // peak update. startCollateral is always realized. basisCollateral unrealized
-        if (col > collatbasis) {  mkt.idxBasisCollateral = col }  
-        // update uret used by qrom holos check. Used at all?? rmv
-        mkt.uret = uret
-        // compute real return based on mark price based pnl. can only compute if sz and tick are nonzero
-        //let tk = this.poolState[mkt.tkr].tick
-        // use cumrefTick as markprice
-        
-        let tk = this.poolState[mkt.tkr].cumulativeTick?.refCumTick
-        if (mkt.startSize && mkt.openMark && tk) { 
-            //markPnl = await this.getMarkPnl(mkt, tk) 
-            // (collatbasis + markPnl - collatbasis)/collatbasis = 1 + markPnl/collatbasis
-            mret = 1 + (markPnl)/collatbasis
-        }
-        else if (!mkt.startSize || !mkt.openMark) { // if no mkt size, pos WAS open at restart. get it from perpService
-            if (!mkt.startSize) {
-              mkt.startSize = (await this.perpService.getTotalPositionSize(mkt.wallet.address, mkt.baseToken)).toNumber();
-            }
-            if (!mkt.openMark) {
-              let twappx = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber();
-              console.warn("WARN: using twap to set openMark in: " + mkt.name)
-              this.marketMap[mkt.name].openMark = twappx/mkt.startSize
-            }
-          }
-          console.log(mkt.name + " icbasis:" + mkt.idxBasisCollateral.toFixed(2) + "i uret:" + uret.toFixed(4) +
-          " mret:" + (mret?.toFixed(4) ?? "null") + " mpnl:" + markPnl.toFixed(4));
-    } 
-    return check 
-  }
 
 // FIXME: use the new way >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 
-async maxMaxMarginRatioCheck(market: Market) {
-    // current marginratio = collat+upnl/positionVal. note collat + upnl == basisCollateral
-    let pv = (await this.perpService.getTotalAbsPositionValue(market.wallet.address)).toNumber()
-    let tick = this.poolState[market.tkr].tick
-    // skip if no position
-    if (pv == 0 || tick == 0) return
-    let mr = market.idxBasisCollateral/pv
-    if (mr > market.maxMarginRatio ){
-    // compute additional size to bring down the margin ratio to reset value
-    // mr = (collatBasis)/positionValue=positionSize*price => positionSize = collatBasis/price*mr
-    
-        let tickPrice = Math.pow(1.0001, tick!)
-        let idxPrice = (await this.perpService.getIndexPrice(market.tkr)).toNumber()
-        let mktPrice = (await this.perpService.getMarketPrice(market.tkr)).toNumber()
+// print mkt, mpx,ipx and time
+async updateSpreadRatio() {
+    // loop through all markets
+    const poolMap: { [keys: string]: any } = {}
+    let now = Date.now()
+        for (const p of this.perpService.metadata.pools) { 
+            //let pool: UniswapV3Pool
+            const unipool = new ethers.Contract( p.address, IUniswapV3PoolABI.abi, this.evtSubProvider)
 
-    // tick price results in mr higher than reset. go for lowest price
-    // BUG: pick min for long and max for short. for now just use the mark price
-    let price = mktPrice
+            const result = await unipool.slot0();
+          // Unpack the result array into individual values
+            const [sqrtPriceX96, tick] = result;
+            let mktPrice = 1.0001 ** tick
+            //let mktpx = sqrtPriceX96 / 2n ** 96n
+            //let mktPrice = sqrtPriceX96.toNumber()
 
-    let sz  = market.idxBasisCollateral/price*market.resetMargin
-    // add to the position and recompute margin ratio
-    await this.open(market, sz*price)
 
-    pv = (await this.perpService.getTotalAbsPositionValue(market.wallet.address)).toNumber()
-    let newmr = market.idxBasisCollateral/pv
-    let tstmp = new Date().toLocaleTimeString([], {hour12: false, timeZone: 'America/New_York'});
-    console.warn("mr trigger was based on index price")
-    console.log(tstmp + " INFO: tick, indx, market Price: " + tickPrice + " " + idxPrice + " " + mktPrice)
-    console.log(tstmp + " INFO: MARGIN RESET: " + market.name + " prv mr:" + mr.toFixed() + " nu mr:" + newmr.toFixed() + " sz:" + sz)
-    }
+
+
+        
+            
+            let idxPrice = (await this.perpService.getIndexPrice(p.baseAddress)).toNumber()
+            //let mktPrice = (await this.perpService.getMarketPrice(p.address)).toNumber()
+            // log last tick value and its timestamp
+            const csvString = `${now},${p.baseSymbol},${idxPrice},${mktPrice.toFixed(4)}}\n`
+            fs.appendFile('sratio.csv', csvString, (err) => { if (err) throw err });
+        }
 }
 //--------------------------------------------------------------------------------------
 // TODO: factor out this check from of here
@@ -1769,25 +1732,8 @@ async ensureSwapListenersOK(): Promise<void> {
 //  mainRoutine
 // TODO: OPTIMIZE: batch all checks for all legs. can avoid unnecessary checks e.g if SHORT leg above threshold twin will not
 //--------------------------------------------------------------------------------------
-  async checksRoutine(market: Market) {
-    //TODO.BIZCONT redo ensureSwapListenersOK, it will always return listerneCounter of zero coz new instance
-    //await this.ensureSwapListenersOK()
-    // new cycle. update cycle deltas based on what events have been received since last cycle
-    this.processEventInputs()
-
-    // now that cycle events delta. first things first.check for TP_MAX_LOSS
-    if ( await this.maxLossCheckAndStateUpd(market) ) {   // have a positive => close took place. check for qrom crossing
-        await this.putMktToSleep(market)
-
-        // >>>>>>>>>>>>>> UNCOMMENT THIS TO ENABLE SOLIDARITY KILL
-        //await this.solidarityKill(market.side)  WARN: diabling until fix return
-    }
-    //updat pool data
-    //this.checkOnPoolSubEmptyBucket() //<========================== poolSubChecknPullBucket
-    this.mktDirectionChangeCheck()  // asses direction. WAKEUP deps on this
-      // MMR. maximum margin RESET check
-    await this.maxMaxMarginRatioCheck(market)
-    await this.wakeUpCheck(market) //wakeup only favored leg if sided mkt else both
+  async spiRoutine(market: Market) {
+    await this.updateSpreadRatio()
   }
   
     // check if there is a direction change into a non-zebra beast

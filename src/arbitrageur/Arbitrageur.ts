@@ -260,7 +260,9 @@ export class Arbitrageur extends BotService {
     private evtBuffer: { [key: string]: CircularBuffer } = {};
     //convinienc list of enbled market
     enabledMarkets: string[] =[]
-    
+    spreadBuffer: string[] = []
+    spreadBuffCounter: number = 0
+    //seenMap: { [key: string]: boolean } = {}
 
     
     async setup(): Promise<void> {
@@ -1688,33 +1690,57 @@ async maxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
 // FIXME: use the new way >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 
 // print mkt, mpx,ipx and time
+
+
+
 async updateSpreadRatio() {
-    // loop through all markets
-    const poolMap: { [keys: string]: any } = {}
-    let now = Date.now()
-        for (const p of this.perpService.metadata.pools) { 
-            //let pool: UniswapV3Pool
-            const unipool = new ethers.Contract( p.address, IUniswapV3PoolABI.abi, this.evtSubProvider)
-
-            const result = await unipool.slot0();
-          // Unpack the result array into individual values
-            const [sqrtPriceX96, tick] = result;
-            let mktPrice = 1.0001 ** tick
-            //let mktpx = sqrtPriceX96 / 2n ** 96n
-            //let mktPrice = sqrtPriceX96.toNumber()
-
-
-
-
-        
-            
-            let idxPrice = (await this.perpService.getIndexPrice(p.baseAddress)).toNumber()
-            //let mktPrice = (await this.perpService.getMarketPrice(p.address)).toNumber()
-            // log last tick value and its timestamp
-            const csvString = `${now},${p.baseSymbol},${idxPrice},${mktPrice.toFixed(4)}}\n`
-            fs.appendFile('sratio.csv', csvString, (err) => { if (err) throw err });
+    //const config.SPI_CAPACITY_SIZE = 3; // change this to set the buffer size
+    let now = Date.now();
+    //type SeenMap = { [key: string]: boolean }
+    //let seenMap: SeenMap = {};
+  
+    for (const p of this.perpService.metadata.pools) { 
+        const unipool = new ethers.Contract(p.address, IUniswapV3PoolABI.abi, this.evtSubProvider)
+        const result = await unipool.slot0();
+        const [sqrtPriceX96, tick] = result;
+        let mktPrice = 1.0001 ** tick
+        let idxPrice = (await this.perpService.getIndexPrice(p.baseAddress)).toNumber()
+        const csvString = `${now},${p.baseSymbol},${idxPrice},${mktPrice.toFixed(4)}}\n`
+    
+        const fields = csvString.split(",");
+        const fieldsExceptTimestamp = fields.slice(1).join(",");
+        const isDuplicate = this.spreadBuffer.some((entry) => {
+          const entryFields = entry.split(",");
+          const entryFieldsExceptTimestamp = entryFields.slice(1).join(",");
+          return entryFieldsExceptTimestamp === fieldsExceptTimestamp;
+        });
+    
+        if (!isDuplicate) {
+          this.spreadBuffer.push(csvString);
+          console.log(now + " MON: " + p.baseSymbol + " mpx/ipx: " + (mktPrice/idxPrice).toFixed(4))
         }
-}
+      }
+    // calculate age on last timestamp instead of using this flag
+    if (this.spreadBuffCounter >= config.SPI_SPREAD_BUFF_COUNTER) {
+        fs.appendFile('sratio.csv', this.spreadBuffer.join(''), (err) => { if (err) throw err });
+        this.spreadBuffer = [];
+        this.spreadBuffCounter = 0;
+
+    /*
+      //const uniqueData = this.spreadBuffer.filter((item, index, self) => {
+      const lastTwoColumns = item.split(',').slice(-2).join(',');return index === self.findIndex(i => { return i.split(',').slice(-2).join(',') === lastTwoColumns;});});const data = uniqueData.join("");
+      fs.appendFile('sratio.csv', data, (err) => { if (err) throw err });
+      this.spreadBuffer = [];
+      this.spreadBuffCounter = 0;
+      //this.seenMap = {};
+      */
+    }
+  }
+  
+  
+  
+  
+
 //--------------------------------------------------------------------------------------
 // TODO: factor out this check from of here
 //--------------------------------------------------------------------------------------

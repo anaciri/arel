@@ -884,7 +884,7 @@ async getPosVal(leg: Market): Promise<Number> {
             await this.openPosition(mkt.wallet,mkt.baseToken,mkt.side,AmountType.QUOTE, Big(usdAmount),undefined,undefined,undefined)
             console.log(Date.now() + " " + mkt.name + " INFO: Re-opened...")
         } catch (e: any) {
-            console.error(`ERROR: FAILED SECOND OPEN: ${e.toString()}`)
+            console.error(Date.now() + `${ mkt.name} FAIL: SECOND OPEN FAILED: ${e.toString()}`)
             throw e
         }
     }
@@ -903,6 +903,21 @@ async getPosVal(leg: Market): Promise<Number> {
            // make sure to null on close
  }
 
+ // open straddle
+ async openStraddle(mkt: Market, usdAmount: number, twinAmount: number ) {
+    if (config.DEBUG_FLAG) {
+        console.log("DEBUG: open: " + mkt.name + " " + usdAmount)
+        return
+    }
+    let twin = this.marketMap[mkt.twin]
+    // open first leg and twin
+    try { await this.open(mkt, usdAmount) }
+    catch (e: any) { console.error(Date.now() + `${ mkt.name} FAIL: STRADDLE OPEN: ${e.toString()}`) }
+    try { await this.open(twin, twinAmount) }
+    catch (e: any) { console.error(Date.now() + `${ twin.name} FAIL: STRADDLE OPEN: ${e.toString()}`) }
+ }
+
+   
  // close sort of dtor. do all bookeeping and cleanup here
  //REFACTOR: this.close(mkt) will make it easier for functinal styling
  // onClose startCollateral == basisCollateral == settledCollatOnClose
@@ -1193,7 +1208,49 @@ if (config.TRACE_FLAG) { console.log(Date.now() + " TRACE: mktDir: " + btcDelta.
 //----------------------------------
 // wakeUpCheck
 //-----
+// open straddle if band crossed
 async wakeUpCheck(mkt: Market): Promise<boolean> { 
+    // check first if a straddle was opened. considered not openn if BOTH legs are closed
+    let pos = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
+    let twin = this.marketMap[mkt.twin]
+    let tpos = (await this.perpService.getTotalPositionValue(twin.wallet.address, mkt.baseToken)).toNumber()
+
+    // if either is nonzero return false
+    if (pos || tpos) { return false }
+
+    // get most recent entry
+    interface SpreadEntry {
+        timestamp: number;
+        ticker: string;
+        idxprice: number;
+        mktprice: number;
+      }
+      
+      let mostRecentEntry: SpreadEntry | undefined;
+      for (const entryString of this.spreadBuffer) {
+        const [timestampStr, tickerStr, idxpx, mktpx] = entryString.split(",");
+        const timestamp = parseInt(timestampStr);
+        const price = parseFloat(idxpx);
+        const otherPrice = parseFloat(mktpx);
+        if (tickerStr === mkt.tkr && (!mostRecentEntry || timestamp > mostRecentEntry.timestamp)) {
+          mostRecentEntry = { timestamp, ticker: tickerStr, idxprice: price, mktprice: otherPrice };
+        }
+      }
+
+      // if ratio above band open stradde
+        if (mostRecentEntry) {
+        const sratio = mostRecentEntry.mktprice / mostRecentEntry.idxprice;
+        if (sratio > config.SPI_HI_BAND_RATIO || sratio < config.SPI_LO_BAND_RATIO) {
+            let sz = mkt.startCollateral / mkt.resetMargin
+            let tsz = twin.startCollateral / twin.resetMargin
+            this.openStraddle(mkt, sz, tsz)
+        }
+    }
+
+    return false
+}
+
+async BKPwakeUpCheck(mkt: Market): Promise<boolean> { 
     // return if no new data or no new data i.e older than 1 cyle
     let ts = this.poolState[mkt.tkr].cycleTickDeltaTs
     let now = Date.now()
@@ -1207,57 +1264,6 @@ if (config.TRACE_FLAG) { console.log(now + " TRACE: wakeUpCheck: " + mkt.tkr + "
     if (Math.abs(tickDelta) < mkt.longEntryTickDelta) { return false }
     
   // wake up long/sThort on tick inc
-    let dir = this.holosSide
-    if ( (mkt.side == Side.LONG) && (tickDelta > mkt.longEntryTickDelta) && (dir == Direction.TORO) ) {
-        let pos = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
-        let sz = mkt.startCollateral / mkt.resetMargin
-        try { 
-            if(!pos) { 
-                await this.open(mkt,sz)
-                let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
-                console.log(tstmp + " INFO: WAKEUP:" + mkt.name + " Dt:" + tickDelta)
-                return true
-             } 
-        }
-        catch(err) { console.error(Date.now() + mkt.tkr +  " OPEN FAILED in wakeUpCheck") }
-    }
-    else if ( (mkt.side == Side.SHORT) && (tickDelta < 0)
-                                       && (Math.abs(tickDelta) > mkt.shortEntryTickDelta) 
-                                       && (dir == Direction.BEAR)) {
-        let pos = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
-        let sz = mkt.startCollateral / mkt.resetMargin
-        try {
-            if(!pos) {
-                await this.open(mkt,sz)
-                let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
-                console.log(tstmp + " INFO: WAKEUP:" + mkt.name + " Dt:" + tickDelta)
-                return true
-            }
-        }
-        catch(err) { console.error(Date.now() + mkt.tkr +  " OPEN FAILED in wakeUpCheck") }
-    }
-
-    if (tickDelta) {
-        console.log(this.holosSide + ": tickDelta:" + mkt.name + ": " + tickDelta)
-    }
-
-    return false
-}
-
-async BKPwakeUpCheck(mkt: Market): Promise<boolean> { 
-    // return if no new data or no new data i.e older than 1 cyle
-    let len = this.poolState[mkt.tkr].bucket.length
-    if (len == 0) { return false }
-    let cutoff = Date.now() - config.PRICE_CHECK_INTERVAL_SEC*1000
-    if (this.poolState[mkt.tkr].bucket[len-1].timestamp < cutoff ) { return false }
-    
-    // new data in bucket. NAIVE: get the dlta btwin last and first
-    let tickDelta = this.poolState[mkt.tkr].bucket[len-1].tick - this.poolState[mkt.tkr].bucket[0].tick
-
-    // if absolute tickDelta too small dont bother
-    if (Math.abs(tickDelta) < mkt.longEntryTickDelta) { return false }
-    
-  // wake up long/short on tick inc
     let dir = this.holosSide
     if ( (mkt.side == Side.LONG) && (tickDelta > mkt.longEntryTickDelta) && (dir == Direction.TORO) ) {
         let pos = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
@@ -1643,16 +1649,17 @@ async maxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
         let collatbasis = mkt.idxBasisCollateral
         let wcollatbasis = mkt.wBasisCollateral
         // initially print both, plus good to check on divergencd
-        const wcol = await this.getPnlAdjCollatValue(mkt)
+        // DISABLE weight based coll calculation
+//const wcol = await this.getPnlAdjCollatValue(mkt)  <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
         // getAccountValue is based on index price
         const icol = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
     
         //peak tick updated by eventInput procesor. they should match
         if (icol > mkt.idxBasisCollateral) { mkt.idxBasisCollateral = icol }
-        if (wcol > mkt.wBasisCollateral) { mkt.wBasisCollateral = wcol }
+        //if (wcol > mkt.wBasisCollateral) { mkt.wBasisCollateral = wcol }
 
          let uret = 1 + (icol - collatbasis)/collatbasis
-         let wret = 1 + (wcol - wcollatbasis)/wcollatbasis
+         //let wret = 1 + (wcol - wcollatbasis)/wcollatbasis
         if (uret < config.TP_MAX_ROLL_LOSS ) { check = true  }// mark check positive 
 
         // TODO: relative index price rip: rint
@@ -1680,8 +1687,8 @@ async maxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
             }
           }
           */
-          console.log(mkt.name + " ibasis:" + mkt.idxBasisCollateral.toFixed(2) + "idx uret: " + uret.toFixed(4) +
-          " wret:" + wret.toFixed(4) + " wbasis:" + mkt.wBasisCollateral.toFixed(2));
+          console.log(mkt.name + " ibasis:" + mkt.idxBasisCollateral.toFixed(2) + "idx uret: " + uret.toFixed(4))
+//+ " wret:" + wret.toFixed(4) + " wbasis:" + mkt.wBasisCollateral.toFixed(2));     <<<<<<<<<<<<<<<<<<<<<<<<<<
     } 
     return check 
   }
@@ -1717,12 +1724,18 @@ async updateSpreadRatio() {
     
         if (!isDuplicate) {
           this.spreadBuffer.push(csvString);
-          console.log(now + " MON: " + p.baseSymbol + " mpx/ipx: " + (mktPrice/idxPrice).toFixed(4))
+          // mkt/idx ratio
+          console.log(now + " ,MON," + p.baseSymbol + "," + (mktPrice/idxPrice).toFixed(4))
         }
       }
-    // calculate age on last timestamp instead of using this flag
-    if (this.spreadBuffCounter >= config.SPI_SPREAD_BUFF_COUNTER) {
-        fs.appendFile('sratio.csv', this.spreadBuffer.join(''), (err) => { if (err) throw err });
+    // calculate age on last timestamp instead of using this flag so we only add to the file after SPI_SPREAD_BUFF_AGE seconds
+    const oldestTimestamp: number = parseFloat(this.spreadBuffer[0].split(',')[0]);
+    const age: number = Date.now() - oldestTimestamp
+
+    //if (this.spreadBuffCounter >= config.SPI_SPREAD_BUFF_COUNTER) {
+    if (age >= config.SPI_SPREAD_BUFF_AGE_SEC * 1000) {
+        let csvstring = this.spreadBuffer.join("");
+        fs.appendFile('sratio.csv', csvstring, (err) => { if (err) throw err });
         this.spreadBuffer = [];
         this.spreadBuffCounter = 0;
 
@@ -1760,6 +1773,8 @@ async ensureSwapListenersOK(): Promise<void> {
 //--------------------------------------------------------------------------------------
   async spiRoutine(market: Market) {
     await this.updateSpreadRatio()
+    if ( await this.maxLossCheckAndStateUpd(market) ) { await this.putMktToSleep(market) }
+    await this.wakeUpCheck(market)
   }
   
     // check if there is a direction change into a non-zebra beast

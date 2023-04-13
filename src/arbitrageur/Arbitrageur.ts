@@ -155,7 +155,7 @@ const BULL = Side.LONG
 const TP_MIN_MR    = 0.12  // 8.33x
 const TP_MR_DEC_SZ = 0.02
 const TP_MAX_MR    = 0.50 
-const TP_MR_INC_SZ = 0.02  // OJO you INC onStopLoss 5x
+//const TP_MR_INC_SZ = 0.02  // OJO you INC onStopLoss 5x
 
 //decode function
 function decodeEvt(unipool: UniswapV3Pool ,eventdata: any) {
@@ -201,7 +201,6 @@ interface PoolState {
 }  
 
 interface Market {
-    
     wallet: Wallet
     side: Side
     name: string
@@ -224,6 +223,7 @@ interface Market {
     twin: string
 //    peakCollateral: number
     resetMargin: number
+    basisMargin: number
     //leverage: number
     resetNeeded:boolean
     resetSize: number
@@ -517,6 +517,7 @@ if (config.TRACE_FLAG) { console.log(" TRACE: evt: " + tkr  + " " + timestamp + 
                 idxBasisCollateral: market.START_COLLATERAL, // incl unrealized profit
                 wBasisCollateral: market.START_COLLATERAL, // same starting point as idx
                 resetMargin: market.RESET_MARGIN,
+                basisMargin: market.RESET_MARGIN,
                 longEntryTickDelta: market.TP_LONG_MIN_TICK_DELTA,
                 shortEntryTickDelta: market.TP_SHORT_MIN_TICK_DELTA,
                 openMark:null,
@@ -645,7 +646,7 @@ if (config.TRACE_FLAG) { console.log(" TRACE: evt: " + tkr  + " " + timestamp + 
                     try {
                         //await this.arbitrage(market)
                         await this.checksRoutine(market)
-                    } catch (err: any) { await this.jerror({ event: "ArbitrageError", params: { err } })
+                    } catch (err: any) { await this.jerror({ event: "XCEPT: " + market.name, params: { err } })
                     }
                 }),
             )
@@ -1583,6 +1584,25 @@ async holosCheck() :Promise<boolean> {
 this.poolState
     return false
 }
+// index based pnl used in banger
+async getIdxBasedPnl(mkt: Market) : Promise<number>{
+    // pnl = sz * (pxcurrent -pxStart) ; 
+    
+    // note that current size maybe gt start size if already releveraged
+    let csz = (await this.perpService.getTotalPositionSize(mkt.wallet.address, mkt.baseToken)).toNumber()
+    // margin rate basis also may have changed from start on prior relevs
+    // will use ipx for current valuation (same as perp uses). basis price wil be derived from basisMargin
+
+    let currentPx = (await this.perpService.getIndexPrice(mkt.baseToken)).toNumber()
+    // using initial collateral to see what the protocol sees.
+    // mrstart = [pnl = 0 + collateraStart]/sz*pxstart =>  pxStart = collatStart/[sz*mrStart]
+    let basisPrice = mkt.initCollateral/(csz*mkt.basisMargin)
+    // pnl = sz * (pxcurrent -pxStart) ; 
+    let pnl = csz * (currentPx - basisPrice)
+if (config.TRACE_FLAG) { console.log("TRACE: getIndxPnl" + mkt.name + " sz: " + csz + " px: " + currentPx + " basispx: " + basisPrice + " pnl: " + pnl) }
+    return pnl
+}
+
 // equivalent to accountValue (pnlAdjusted value). pnl using cycle-weighted-price cwp not memory weighted price (mwp)
 // calculation: currCollatVal = basisCollateral + pnl = peakCollateral + pnl
 // pnl = currPosVal - peakPosVal = wcp*size - peakPrice*size = size *(wcp - peakPrice)
@@ -1647,6 +1667,33 @@ async maxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
          let wret = 1 + (wcol - wcollatbasis)/wcollatbasis
         if (uret < config.TP_MAX_ROLL_LOSS ) { check = true  }// mark check positive 
 
+          console.log(mkt.name + " ibasis:" + mkt.idxBasisCollateral.toFixed(2) + "idx uret: " + uret.toFixed(4) +
+          " wret:" + wret.toFixed(4) + " wbasis:" + mkt.wBasisCollateral.toFixed(2));
+    } 
+    return check 
+  }
+
+async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
+    // skip if market inactive
+    let check = false ; let markPnl = 0 ; let mret = null
+    let leg = this.marketMap[mkt.name]
+    if (await this.isNonZeroPos(leg)) { 
+        // collatbasis is the peak colateral
+        let collatbasis = mkt.idxBasisCollateral
+        let wcollatbasis = mkt.wBasisCollateral
+        // initially print both, plus good to check on divergencd
+        const wcol = await this.getPnlAdjCollatValue(mkt)
+        // getAccountValue is based on index price
+        const icol = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
+    
+        //peak tick updated by eventInput procesor. they should match
+        if (icol > mkt.idxBasisCollateral) { mkt.idxBasisCollateral = icol }
+        if (wcol > mkt.wBasisCollateral) { mkt.wBasisCollateral = wcol }
+
+         let uret = 1 + (icol - collatbasis)/collatbasis
+         let wret = 1 + (wcol - wcollatbasis)/wcollatbasis
+        if (uret < config.TP_MAX_ROLL_LOSS ) { check = true  }// mark check positive 
+
         // TODO: relative index price rip: rint
     
         // update uret used by qrom holos check. Used at all?? rmv
@@ -1677,51 +1724,30 @@ async maxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
     } 
     return check 
   }
-async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
-    // skip if market inactive
-    let check = false ; let markPnl = 0 ; let mret = null
-    let leg = this.marketMap[mkt.name]
-    if (await this.isNonZeroPos(leg)) { 
-        // collatbasis is the peak colateral
-        let collatbasis = mkt.idxBasisCollateral
-        const col = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
-        
-        let uret = 1 + (col - collatbasis)/collatbasis
-        if (uret < config.TP_MAX_ROLL_LOSS ) { check = true  }// mark check positive 
+// compute mr as ratio of collateral to position value. use startCollatera and ok to use the index valuation since something
+// similar is waht perp uses: mr = [startcollat + pn]/sz*ipx
 
-        // peak update. startCollateral is always realized. basisCollateral unrealized
-        if (col > collatbasis) {  mkt.idxBasisCollateral = col }  
-        // update uret used by qrom holos check. Used at all?? rmv
-        mkt.uret = uret
-        // compute real return based on mark price based pnl. can only compute if sz and tick are nonzero
-        //let tk = this.poolState[mkt.tkr].tick
-        // use cumrefTick as markprice
-        
-        let tk = this.poolState[mkt.tkr].cumulativeTick?.refCumTick
-        if (mkt.startSize && mkt.openMark && tk) { 
-            //markPnl = await this.getMarkPnl(mkt, tk) 
-            // (collatbasis + markPnl - collatbasis)/collatbasis = 1 + markPnl/collatbasis
-            mret = 1 + (markPnl)/collatbasis
+  async maxMaxMarginRatioCheck(market: Market) {
+    if ( !(await this.isNonZeroPos(market)) ) {return}
+    // compute current mr = [startcollat + pn]/sz*ipx
+    let pnl = await this.getIdxBasedPnl(market)
+    let idxPrice = (await this.perpService.getIndexPrice(market.baseToken)).toNumber()
+    let csz = (await this.perpService.getTotalPositionSize(market.wallet.address, market.baseToken)).toNumber()
+    let currMR = (market.startCollateral + pnl)/(csz *idxPrice )
+
+    if (currMR > market.maxMarginRatio) {
+  
+        let usdAmount = config.TP_SCALE_FACTOR*csz*idxPrice 
+        try { await this.open(market, usdAmount) 
+            console.log(Date.now() + " INFO: maxMargin " + market.name + " amount: " + usdAmount)
         }
-        else if (!mkt.startSize || !mkt.openMark) { // if no mkt size, pos WAS open at restart. get it from perpService
-            if (!mkt.startSize) {
-              mkt.startSize = (await this.perpService.getTotalPositionSize(mkt.wallet.address, mkt.baseToken)).toNumber();
-            }
-            if (!mkt.openMark) {
-              let twappx = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber();
-              console.warn("WARN: using twap to set openMark in: " + mkt.name)
-              this.marketMap[mkt.name].openMark = twappx/mkt.startSize
-            }
-          }
-          console.log(mkt.name + " icbasis:" + mkt.idxBasisCollateral.toFixed(2) + "i uret:" + uret.toFixed(4) +
-          " mret:" + (mret?.toFixed(4) ?? "null") + " mpnl:" + markPnl.toFixed(4));
-    } 
-    return check 
-  }
+        catch { console.log(Date.now() + ", maxMargin Failed Open,  " +  market.name )}
+    }
+}
 
 // FIXME: use the new way >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 
-async maxMaxMarginRatioCheck(market: Market) {
+async BKPmaxMaxMarginRatioCheck(market: Market) {
     // current marginratio = collat+upnl/positionVal. note collat + upnl == basisCollateral
     let pv = (await this.perpService.getTotalAbsPositionValue(market.wallet.address)).toNumber()
     let tick = this.poolState[market.tkr].tick
@@ -1733,7 +1759,7 @@ async maxMaxMarginRatioCheck(market: Market) {
     // mr = (collatBasis)/positionValue=positionSize*price => positionSize = collatBasis/price*mr
     
         let tickPrice = Math.pow(1.0001, tick!)
-        let idxPrice = (await this.perpService.getIndexPrice(market.tkr)).toNumber()
+        let idxPrice = (await this.perpService.getIndexPrice(market.baseToken)).toNumber()
         let mktPrice = (await this.perpService.getMarketPrice(market.tkr)).toNumber()
 
     // tick price results in mr higher than reset. go for lowest price

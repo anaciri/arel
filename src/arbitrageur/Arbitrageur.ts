@@ -1683,7 +1683,7 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
     let idxPrice = (await this.perpService.getIndexPrice(market.baseToken)).toNumber()
     let csz = (await this.perpService.getTotalPositionSize(market.wallet.address, market.baseToken)).toNumber()
     let currMR = (market.startCollateral + pnl)/(csz *idxPrice )
-
+if (config.TRACE_FLAG) { console.log("TRACE: " + market.name + " mr: " + currMR.toFixed(4) + " pnl: " + pnl.toFixed(4))}
     if (currMR > market.maxMarginRatio) {
         let usdAmount = config.TP_SCALE_FACTOR*Math.abs(csz)*idxPrice 
         try { await this.open(market, usdAmount) 

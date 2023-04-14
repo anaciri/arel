@@ -1680,7 +1680,7 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
     if ( !(await this.isNonZeroPos(market)) ) {return}
     // compute current mr = [startcollat + pn]/sz*ipx
 //W_END: hack    
-    let pnl = await this.getIdxBasedPnl(market)
+    //let pnl = await this.getIdxBasedPnl(market)  <-- WRONG PNL AND CURR MR calculation
     let perppnl = (await this.perpService.getUnrealizedPnl(market.wallet.address)).toNumber()
     
     let perpmr = await this.perpService.getMarginRatio(market.wallet.address)
@@ -1692,8 +1692,8 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
 //W_END: hack    
     let idxPrice = (await this.perpService.getIndexPrice(market.baseToken)).toNumber()
     let csz = (await this.perpService.getTotalPositionSize(market.wallet.address, market.baseToken)).toNumber()
-    let currMR = (market.startCollateral + pnl)/(csz *idxPrice )
-if (config.TRACE_FLAG) { console.log("TRACE: " + market.name + " mr: " + currMR.toFixed(4) + " pnl: " + pnl.toFixed(4))}
+    //let currMR = (market.startCollateral + pnl)/(csz *idxPrice )  <--- WRONG PNL AND CURR MR calculation
+//if (config.TRACE_FLAG) { console.log("TRACE: " + market.name + " mr: " + currMR.toFixed(4) + " pnl: " + pnl.toFixed(4))}
 if (config.TRACE_FLAG) { console.log("TRACE: " + market.name + " perpmr: " + perpmr.toFixed(4) + " perppnl: " + perppnl.toFixed(4))}
 // if perppnl negative ret
 if (perppnl < 0) { return }
@@ -1706,13 +1706,15 @@ if (freec < MIN_FREEC ) {
 
 // compute size of position to RESET back: mr = [startcollat + pn]/sz*ipx => sz = [startcollat + pn]/mr/ipx
 let nxtsz = (market.startCollateral + perppnl)/(market.resetMargin*idxPrice)
-let resetamnt = Math.abs(nxtsz)*idxPrice
+let incsz = nxtsz - Math.abs(csz)
+let resetamnt = Math.abs(incsz)*idxPrice
 // usdAmount will be the minimum of the reset amount and the free collateral
 let usdAmount = Math.min(resetamnt, freec)*HAIRCUT
 if (perpmr.toNumber() > market.maxMarginRatio) {
     //let usdAmount = config.TP_SCALE_FACTOR*Math.abs(csz)*idxPrice 
     try { await this.open(market, usdAmount) 
-        console.log(Date.now() + " INFO: scale " + market.name + " mr: " + currMR.toFixed(4) +  "usdamnt: " + usdAmount.toFixed())
+        console.log(Date.now() + " INFO: scale " + market.name + " mr: " + perpmr.toFixed(4) +  
+                                  " usdamnt: " + usdAmount.toFixed() + " freec: " + freec.toFixed())
     }
     catch { console.log(Date.now() + ", maxMargin Failed Open,  " +  market.name )}
 }

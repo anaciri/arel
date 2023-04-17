@@ -5,18 +5,141 @@ import { Log } from "@perp/common/build/lib/loggers"
 import { BotService } from "@perp/common/build/lib/perp/BotService"
 import { AmountType, Side } from "@perp/common/build/lib/perp/PerpService"
 import { CollateralManager, IClearingHouse } from "@perp/common/build/types/curie"
+import { UniswapV3Pool } from "@perp/common/build/types/ethers-uniswap"
+import BigNumber from 'bignumber.js';
 import Big from "big.js"
 import { ethers } from "ethers"
 import { max, padEnd, update } from "lodash"
+import { decode } from "punycode"
 import { Service } from "typedi"
 import config from "../configs/config.json"
+import * as fs from 'fs'
+import { tmpdir } from "os"
+import { time, timeStamp } from "console"
+import { Interface } from "readline"
+//import { IUniswapV3PoolEvents } from "@perp/IUniswapV3PoolEvents";
+import IUniswapV3PoolABI from '@uniswap/v3-core/artifacts/contracts/interfaces/IUniswapV3Pool.sol/IUniswapV3Pool.json'
+import { Block, StaticJsonRpcProvider, WebSocketProvider } from "@ethersproject/providers";
+import { Mutex } from "async-mutex";
+import { checkServerIdentity } from "tls"
+
+//import { parse } from 'csv-parse';
+
+const jsonfile = require('jsonfile');
+
+
+let dbgcTicks: TickData[] = []; // declare variable outside if statement
+let dbgmTicks: TickData[] = [];
+
+
+type Timestamp = number;
+type Tick = number;
+
+interface TickData {
+  timestamp: Timestamp;
+  tick: Tick;
+}
+
+class CircularBuffer {
+  private readonly buffer: TickData[];
+  private readonly capacity: number;
+  private readonly lock: Mutex;
+
+  constructor(capacity: number) {
+    this.buffer = [];
+    this.capacity = capacity;
+    this.lock = new Mutex();
+  }
+
+  public add(timestamp: Timestamp, tick: Tick): void {
+    this.lock.acquire();
+    this.buffer.push({ timestamp, tick });
+    if (this.buffer.length > this.capacity) {
+      this.buffer.shift();
+    }
+    this.lock.release();
+  }
+
+  public getLatest(): TickData {
+    this.lock.acquire();
+    const latest = this.buffer[this.buffer.length - 1];
+    this.lock.release();
+    return latest || { timestamp: 0, tick: 0 };
+  }
+
+  public getAll(): TickData[] {
+    this.lock.acquire();
+    const copy = [...this.buffer];
+    this.lock.release();
+    return copy;
+  }
+
+  public getDataAt(timestamp: Timestamp): TickData[] {
+    this.lock.acquire();
+    const data: TickData[] = [];
+    for (const item of this.buffer) {
+      if (item.timestamp >= timestamp) {
+        data.push(item);
+      }
+    }
+    this.lock.release();
+    return data;
+  }
+
+  public hasWrapped(): boolean {
+    this.lock.acquire();
+    const first = this.buffer[0];
+    const last = this.buffer[this.buffer.length - 1];
+    this.lock.release();
+    return last !== undefined && first !== undefined && last.timestamp < first.timestamp;
+  }
+
+  public getLength(): number {
+    this.lock.acquire();
+    const length = this.buffer.length;
+    this.lock.release();
+    return length;
+  }
+}
+
+
 require('dotenv').config();
+//const CAP_EDGE_TICKERS = ["vSOL", "vPERP", "vFLOW", "vNEAR", "vFTM", "vAPE", "vAAVE"]
+const CAP_EDGE_TICKERS = ["vSOL", "vPERP", "vFLOW", "vAAVE"]
 
 const DBG_run = false 
 // typedefs
 type BaseTokenAddr = string
 type EthersWallet = ethers.Wallet
 type closeFuncType = (arg1: EthersWallet, arg2: BaseTokenAddr) => Promise<void>
+
+
+enum Direction {
+    ZEBRA = "zebra",
+    TORO = "toro",
+    BEAR = "bear"
+}
+
+type TickRecord = {
+    timestamp: number
+    tick: number
+  };
+
+type CumulativeTick = {
+    refCumTickTimestamp: number;
+    refCumTick: number // acc of last 15sec perp cap timeslot
+    prevRefCumTick: number // previous acc of last 15sec perp cap timeslot
+    currCumTick: number // current running accum running every tulut cycle
+  };
+// low level poolData only intended for event handlers and eventInput processor
+interface PoolData {
+    //lastRecord: TickRecord 
+    inBuffer: CircularBuffer[]
+    bucket: TickRecord[] //TO REMOVE: timestamp, tick raw
+    //currTickDelta: number, //latest delta computed by updatePoolData
+    //prevTickDelta: number, //previou delta saved by updatePoolData
+    isRead: boolean
+}  
 
 const BEAR = Side.SHORT
 const BULL = Side.LONG
@@ -26,7 +149,19 @@ const BULL = Side.LONG
 const TP_MIN_MR    = 0.12  // 8.33x
 const TP_MR_DEC_SZ = 0.02
 const TP_MAX_MR    = 0.50 
-const TP_MR_INC_SZ = 0.02  // OJO you INC onStopLoss 5x
+//const TP_MR_INC_SZ = 0.02  // OJO you INC onStopLoss 5x
+
+//decode function
+function decodeEvt(unipool: UniswapV3Pool ,eventdata: any) {
+    // should i use IUniswapV3PoolEvents and eventdata: ethers.Event?
+    let evetdata = "0xBd7a3B7DbEb096F0B832Cf467B94b091f30C34ec"
+    const decodedEventData = unipool.interface.decodeEventLog('Swap', eventdata);
+          // Get the token addresses and tick of the event
+            const token0Address = decodedEventData.token0;
+            const token1Address = decodedEventData.token1;
+            const tick = decodedEventData.tick;
+            console.log("token0Address: ", token0Address);
+}
 
 interface Result<T> {
     error?: Error;
@@ -44,36 +179,55 @@ function transformValues(map: Map<string, string>,
     return result;
   }
   // NOTE: START_COLLATERAL, collateral and peakcollateral: collat is the 'real collat' init to START_COLLATERAL and update on
-  // scale down/up. virtual collateral is the 'peak' unrealized collateral
+  
+interface PoolState {
+    wpeakTick: Tick // peak cycle wpx since duration of bot
+    wcycleTick: Tick // cycle_wpx
+    cycleTickDeltaTs: Timestamp
+    cycleTickDelta: number // cycle_wpx - memory_wpx typically 1 min cycle/30 min memory
+    poolAddr: string,
+    bucket: TickRecord[],
+    tick: number | undefined,
+    prevTick: number | undefined,
+    poolContract: UniswapV3Pool,
+    cumulativeTick: CumulativeTick | null, // time interval determine by PM_CUM_TICK_INTERVAL default 1 second
+    //sqrtPriceX96: number, // 96 bits of precision. needed??
+}  
 
 interface Market {
-    
     wallet: Wallet
     side: Side
     name: string
+    tkr: string
 //    active: boolean
     baseToken: string
     rollEndLock: boolean
     poolAddr: string
+    longEntryTickDelta: number
+    shortEntryTickDelta: number
     minReturn: number
     maxReturn: number
     uret: number  // unrealized return
     minMarginRatio: number
     maxMarginRatio: number
-    basisCollateral: number
-    startCollateral: number
+    idxBasisCollateral: number // uses idx based getAccountVal
+    wBasisCollateral: number  // uses getPnLAdjustedCollateral valu
+    startCollateral: number // gets reset everytme we reopen
+    initCollateral: number  // read from config aka seed
     twin: string
 //    peakCollateral: number
-    resetLeverage: number
-    leverage: number
+    resetMargin: number
+    basisMargin: number
+    //leverage: number
     resetNeeded:boolean
     resetSize: number
+    startSize: number | null // initialized on first open and nulled on close
+    openMark: number | null // mark at open
     cummulativeLoss: number
-    notionalBasis: number
+    //notionalBasis: number
     maxPnl: number
 // TODO.RMV
 orderAmount: Big
-
 }
 
 const DUST_USD_SIZE = Big(100)
@@ -87,58 +241,25 @@ export class Arbitrageur extends BotService {
     //private pkMap = new Map<string,string>([...Object.entries(pkconfig.PK_MAP)])
     private resetMap = new Map<string, boolean>()
     private pkMap = new Map<string, string>()
-    private marketMap: { [key: string]: Market } = {}
+     marketMap: { [key: string]: Market } = {}
     private readonly arbitrageMaxGasFeeEth = Big(config.ARBITRAGE_MAX_GAS_FEE_ETH)
-    private holosSide: Side | null = null
-    private prevHolsSide: Side | null = null
-    //private closedHolos: string[] = []
+    private holosSide: Direction = Direction.ZEBRA
+    private prevHolsSide: Direction = Direction.ZEBRA
+    private poolState: { [keys: string]: PoolState } = {}
 
-//----------------------------------------------------------------------------------------
-// DBG/ manual
-// block: 888, vPERP
-//----------------------------------------------------------------------------------------
-async dbg_openclose() {
-    let mkt = 'vPERP'
-    let btoken = "0x9482AaFdCed6b899626f465e1FA0Cf1B1418d797"
-    let side = Side.SHORT
-    let usdAmount = 50
-
-    let wlt = this.ethService.privateKeyToWallet(this.pkMap.get(mkt)!)
-    try {
-        await this.openPosition(wlt!, btoken ,side,AmountType.QUOTE,Big(usdAmount),undefined,undefined,undefined)
-    }
-    catch (e: any) {
-        console.error(`ERROR: FAILED OPEN. Rotating endpoint: ${e.toString()}`)
-    }
-}
-
-async dbg_get_uret() {
-    // OJO. dont wast time testing what u know already works. closing and reopening
-    // works that is not changing only logi to compute ure. the other changes
-    // initialize initialCollatera are trivial
-    let mkt = 'vPERP'
-    let perpBaseToken = "0x9482AaFdCed6b899626f465e1FA0Cf1B1418d797"
-    let wlt = this.ethService.privateKeyToWallet(this.pkMap.get(mkt)!)
-    let test =  await this.perpService.getTotalPositionSize(wlt.address, perpBaseToken)
-    let vault = await this.perpService.createVault()
-
-    const initalCollateral = this.marketMap[mkt].startCollateral
-    const currCollateral = (await vault.getBalanceByToken(wlt.address, OP_USDC_ADDR)) / 10**6
-    const upnl =  (await this.perpService.getOwedAndUnrealizedPnl(wlt.address)).unrealizedPnl
-
-    //check return value makes sense
-    let uret = 1 + (currCollateral + upnl.toNumber() - initalCollateral)/initalCollateral
+    private tickBuff: { [ticker: string]: PoolData } = {} // TO DEPRECATE
+    private evtSubProviderEndpoints: string[] = []
+    private evtSubEndpointsIndex: number = 0
+    private evtSubProvider!: StaticJsonRpcProvider | WebSocketProvider;
+    private evtBuffer: { [key: string]: CircularBuffer } = {};
+    //convinienc list of enbled market
+    enabledMarkets: string[] =[]
     
-     //regardless if stoploss or scale, need to 1.close and 2.open 
-     // that is not changing. no need to retest  
-    console.log(uret)
-}
+
+    
 
     async setup(): Promise<void> {
-        this.log.jinfo({
-            event: "SetupNoLo",
-        })
-        //note. ignore entry on provider url. using vSYMB[_SHORT]
+        
        // Print the names and values of all the variables that match the pattern 'v[A-Z]{3,}'
         const pattern = /^v[A-Z]{3,}/  
         let vk = Object.entries(process.env).filter(([k])=> pattern.test(k))
@@ -148,35 +269,194 @@ async dbg_get_uret() {
           }
           
         // initilize pkMap
-        //let wlts = this.pkMap.forEach((v,k) => this.ethService.privateKeyToWallet(v))
           let wlts = transformValues(this.pkMap, v => this.ethService.privateKeyToWallet(v))
         // needed by BotService.retrySendTx
         await this.createNonceMutex([...wlts.values()])
+        // initialize data structures needed for evt buffering and processing i.e evtBuffer and PoolState
+        // 1. get enabled markets from config
         await this.createMarketMap()
+        // 2. allocate memory for evtBuffers for enabled tickers
+/*
+        this.initDataStructs()
+        this.createPoolStateMap() //<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<--- rename to initDataStruc
 
-        /*this.log.jinfo({
-            event: "Arbitrageur",
-            params: {
-                address: this.wallet.address,
-                //TODO.STK display nextnonce for all walets: nextNonce: this.addrNonceMutexMap[this.walletMap[].address].nextNonce,
-                //nextNonce: this.addrNonceMutexMap[this.wallet.address].nextNonce,
-             }, })*/
+        //this.createPoolDataMap()
+
+        this.evtSubProviderEndpoints = process.env.EVENT_SUB_ENDPOINTS!.split(",");
+        if (!this.evtSubProviderEndpoints) { throw new Error("NO Subscription Providers in .env")}
+        else { 
+            this.evtSubProvider = new ethers.providers.JsonRpcProvider(this.evtSubProviderEndpoints[this.evtSubEndpointsIndex]);
+        }
+        await this.setupPoolListeners()
+        
+        const proxies = ["vBTC", "vETH", "vBNB"]
+        for (const tkr of proxies) {
+            let subs = this.poolState[tkr].poolContract.filters.Swap()
+            console.log("SETUP: proxy topics " + tkr + ": " + subs.topics)
+        }
+        
+        console.log("CROC: EvtSubProv: " + this.evtSubProvider.connection.url)
+        
+        // DEBUG snippet ------------------------------------------
+        //this.dbgSnip()
+*/
     }
+//---------------------------------------- SNIP DBG
+
+    async DBG_setupPoolListeners(): Promise<void> {
+        /*
+        //for (const p of this.perpService.metadata.pools) {
+        for (const symb in this.poolStateMap) {
+            //const unipool = await this.perpService.createPool(this.poolStateMap[symb].poolAddr);
+            //let unipool = this.DBGpoolETHcontract
+            
+            
+            // setup Swap event handler
+            unipool.on('Swap', (sender: string, recipient: string, amount0: Big, amount1: Big, sqrtPriceX96: Big, liquidity: Big, tick: number, event: ethers.Event) => {
+                // update previous tick before overwriting
+                this.poolStateMap[symb].prevTick = this.poolStateMap[symb].tick
+                this.poolStateMap[symb].tick= tick
+                // convert ticks to price: price = 1.0001 ** tick
+                let price = 1.0001 ** tick
+
+                const epoch = Math.floor(Date.now() / 1000).toString();
+                // TURN OFF CONSOLE LOGGING. append to file
+                //console.log(`${epoch}, ${symb}, ${this.poolStateMap[symb].prevTick}, ${this.poolStateMap[symb].tick}, ${price.toFixed(4)}`);
+                const stream = fs.createWriteStream('ticks.csv', {flags:'a'} ); 
+                stream.write(`${epoch}, ${symb}, ${this.poolStateMap[symb].prevTick}, ${this.poolStateMap[symb].tick}, ${price.toFixed(4)}\n`);
+              });
+            }
+            */
+    }
+    // setup listeners for all pools
+    // test event: 0xBd7a3B7DbEb096F0B832Cf467B94b091f30C34ec
+    // IUniswapV3PoolEvents.events.Swap:
+    /// @param sender The address that initiated the swap call, and that received the callback
+    /// @param recipient The address that received the output of the swap
+    /// @param amount0 The delta of the token0 balance of the pool
+    /// @param amount1 The delta of the token1 balance of the pool
+    /// @param sqrtPriceX96 The sqrt(price) of the pool after the swap, as a Q64.96
+    /// @param liquidity The liquidity of the pool after the swap
+    /// @param tick The log base 1.0001 of price of the pool after the swap
+
+  
+    //--------------------------------------------------------------------------------
+    // setup listeners for all pools
+    // responsable to update the poolData.tickLog used in updatePoolData to compute the cumulative tick changes
+    // TODO: move poolContractAddr to PoolData
+    //--------------------------------------------------------------------------------
+ 
+
+    // fill inbuff with ticks into circular buffer of at least 30 minutes capacity. may get multiple ticks 
+    // in same second and then go 30 minutes without ticks. size of 400 should be enough
+    // processInputBuff reads syncronously from inbuff and writes to outbuff 
+
+    async BKPsetupPoolListeners(): Promise<void> {
+        //for (const p of this.perpService.metadata.pools) {
+        // read subscription provider from env file
+        const currUrl = this.evtSubProviderEndpoints[this.evtSubEndpointsIndex];
+
+        for (const tkr in this.poolState) {
+            const unipool = new ethers.Contract( this.poolState[tkr].poolAddr, IUniswapV3PoolABI.abi, this.evtSubProvider)
+
+            //let unipool = this.poolState[tkr].poolContract
+            
+            // setup Swap event handler
+            unipool.on('Swap', (sender: string, recipient: string, amount0: Big, amount1: Big, sqrtPriceX96: Big, 
+                                liquidity: Big, tick: number, event: ethers.Event) =>
+                        { // Fill the bucket until the flags changes to read
+                            const timestamp = Math.floor(Date.now())
+                            this.tickBuff[tkr].bucket.push({ timestamp: timestamp, tick: tick})
+                            // if data has been read then empty tickLog
+                            //>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                            if (this.tickBuff[tkr].isRead == true) {
+                                // keep the last tick as reference
+                                this.tickBuff[tkr].bucket.splice(0, this.tickBuff[tkr].bucket.length - 1);
+                                this.tickBuff[tkr].bucket.pop()
+                                this.tickBuff[tkr].isRead = false
+                            }
+                        // heartbeat
+                        //console.log(`HEARTBEAT: ${timestamp}, ${symb}`)    
+                        })
+        }   
+    }
+
+    async setupPoolListeners(): Promise<void> {
+        //for (const p of this.perpService.metadata.pools) {
+        // read subscription provider from env file
+        const currUrl = this.evtSubProviderEndpoints[this.evtSubEndpointsIndex];
+
+        for (const tkr of this.enabledMarkets) {
+            const unipool = new ethers.Contract( this.poolState[tkr].poolAddr, IUniswapV3PoolABI.abi, this.evtSubProvider)
+
+            //let unipool = this.poolState[tkr].poolContract
+            
+            // setup Swap event handler
+            unipool.on('Swap', (sender: string, recipient: string, amount0: Big, amount1: Big, sqrtPriceX96: Big, 
+                                liquidity: Big, tick: number, event: ethers.Event) =>
+                        { // Fill the bucket until the flags changes to read
+                            const timestamp = Math.floor(Date.now())
+                            this.evtBuffer[tkr].add(timestamp, tick)
+if (config.TRACE_FLAG) { console.log(" TRACE: evt: " + tkr  + " " + timestamp + " " + tick) }
+                        })
+        }   
+    }
+
+ initDataStructs() {
+    // capacity should be enought to handle multiple entries in same seconds for a whole cycle
+    const bufferCapacity = config.DS_EVT_CIRCULAR_BUFF_CAPACITY;
+    const marketKeys = Object.keys(this.marketMap);
+
+    for (const key of marketKeys) {
+        const tkr = this.marketMap[key].tkr;
+        this.evtBuffer[tkr] = new CircularBuffer(bufferCapacity);
+    }
+}
+  
+    createPoolStateMap() {
+        for (const pool of this.perpService.metadata.pools) {
+            if (this.enabledMarkets.includes(pool.baseSymbol)) {
+                const poolContract = this.perpService.createPool(pool.address)
+
+                this.poolState[pool.baseSymbol] = { 
+                wpeakTick: 0,
+                wcycleTick: 0,
+                cycleTickDelta: 0,
+                cycleTickDeltaTs: 0,
+                bucket:[], // DEPRECATED use this.evtBuff
+                poolAddr: pool.address,
+                poolContract: poolContract,
+                tick:0,  // otherwise wakeup check will choke
+                prevTick: undefined,
+                cumulativeTick: null,
+              };
+            }
+        }
+    }
+
+    /*/ init PoolData for all pools
+    createPoolDataMap() {
+        for (const pool of this.perpService.metadata.pools) {
+          this.tickBuff[pool.baseSymbol] = { 
+            //lastRecord: {tick: 0, timestamp: 0},
+            bucket: [],
+//            prevTickDelta: 0,
+            //currTickDelta: 0,
+            isRead: false,
+          };
+        }
+      }*/
 
    async createMarketMap() {
         const poolMap: { [keys: string]: any } = {}
-        for (const pool of this.perpService.metadata.pools) {
-            poolMap[pool.baseSymbol] = pool
-        }
+        for (const pool of this.perpService.metadata.pools) { poolMap[pool.baseSymbol] = pool }
         for (const [marketName, market] of Object.entries(config.MARKET_MAP)) {
-            if (!market.IS_ENABLED) {
-                continue
-            }
+            if (!market.IS_ENABLED) { continue }
             const pool = poolMap[marketName.split('_')[0]]
             
             this.marketMap[marketName] = {
                 name: marketName,
-//                active: true,
+                tkr:marketName.split('_')[0],
                 wallet: this.ethService.privateKeyToWallet(this.pkMap.get(marketName)!),
                 side: marketName.endsWith("SHORT") ? Side.SHORT : Side.LONG,
                 baseToken: pool.baseAddress,
@@ -188,41 +468,137 @@ async dbg_get_uret() {
                 uret: 1,
                 minMarginRatio: market.MIN_MARGIN_RATIO,
                 maxMarginRatio: market.MAX_MARGIN_RATIO,
-                basisCollateral: market.START_COLLATERAL,
-                startCollateral: market.START_COLLATERAL,
-//              peakCollateral: market.START_COLLATERAL,
-                resetLeverage: market.RESET_LEVERAGE,
-                leverage: market.RESET_LEVERAGE,
+                initCollateral: market.START_COLLATERAL,  // will not change until restart
+                startCollateral: market.START_COLLATERAL, // will change to previous settled collatera
+                idxBasisCollateral: market.START_COLLATERAL, // incl unrealized profit
+                wBasisCollateral: market.START_COLLATERAL, // same starting point as idx
+                resetMargin: market.RESET_MARGIN,
+                basisMargin: market.RESET_MARGIN,
+                longEntryTickDelta: market.TP_LONG_MIN_TICK_DELTA,
+                shortEntryTickDelta: market.TP_SHORT_MIN_TICK_DELTA,
+                openMark:null,
+                startSize:null,
                 cummulativeLoss: 0,
                 maxPnl: 0,
-                notionalBasis: config.TP_START_CAP*market.RESET_LEVERAGE,
+                //notionalBasis: config.TP_START_CAP/market.RESET_MARGIN,
                 //TODO.rmv
                 rollEndLock:false,
                 resetNeeded: false,
                 resetSize:0,
                 twin: marketName.endsWith("SHORT") ? marketName.split("_")[0] : marketName + "_SHORT"
             }
+            // populate convinience property
+            this.enabledMarkets.push( marketName.split('_')[0] )
         }
+        // remove duplicates from enabledMarkets (i.e vSOL/and vSOL_SHORT)
+        this.enabledMarkets = [...new Set(this.enabledMarkets)];
+    }
+    
+    async getUSDCbalance(mkt: Market): Promise<string> {
+        const balance = (await this.perpService.getUSDCBalance(mkt.wallet.address)).toNumber()
+        return balance.toFixed(4)
     }
 
     async start(): Promise<void> {
-        this.ethService.enableEndpointRotation()
-        //const balance = await this.perpService.getUSDCBalance(this.wallet.address)
-        //this.log.jinfo({ event: "CheckUSDCBalance", params: { balance: +balance } })
-        /*
-        if (balance.gt(0)) {
-            await this.approve(this.wallet, balance)
-            await this.deposit(this.wallet, balance)
-        }
-        */
-       // OJO. BOOKMARK. after done testin. COMMENT out AND uncomment this.arbitrageRoutine()
-        //this.dbg_get_uret()
-        // UNCOMMENT ME ABOVE to debug
-        // WAIT FOR setup to finish
-
-        this.arbitrageRoutine()
+        //TODO.BIZCONT renable rotation to do the health checks
+        //this.ethService.enableEndpointRotation()
+        //await this.arbitrageRoutine()
+        //await Promise.all([this.arbitrageRoutine(), this.tulutRoutine()]);
     }
 
+
+/*
+    // check if INTRA perp cap timeslot 15 sec breached TP_MIN_TICK_DELTA
+    capEdgeCheck() {
+        loop (CAP_EDGE_TICKERS)
+        if tulutCounter < 4 and cummulativeFifteenSec - runningCummulative2second > TP_MIN_TICK_DELTA
+           open position 
+           if cummulativeFifteenSec - runningCummulative2second > 100 dump buffer for analysis as log.err coz should not be here
+     }
+     */
+    async tulutRoutine() {
+        // list of tickers to monitor vSOL, vPERP, vFLOW and vAAVE
+        
+        //const TT_INTERVAL_SEC  = 3 // 15 sec /5 = 3 sec
+        
+        const TT_ROUTINE_SLEEP_SEC = 3 // must be smaller or equal to TT_INTERVAL_SEC
+        // update cummulative prices
+        this.pxAccumUpdate()
+        // check if crossed entry threshold
+        for (const tkr of CAP_EDGE_TICKERS) {
+            let mkt = this.marketMap[tkr]
+            let accpx = this.poolState[mkt.tkr].cumulativeTick
+            // if cummulativeFifteenSec cross threshold open
+            if (!accpx) { continue }
+            //TODO.HEALTHCHECK if tkr not initialized
+            let tickdlta = Math.abs(accpx.currCumTick - accpx.refCumTick) 
+            if ( tickdlta > this.marketMap[tkr].longEntryTickDelta) {
+                 try {
+                    //TODO: this.openPosition(mkt) 
+                 } catch (e) { 
+                    console.error(tkr + ": ERR: failed to open in pxAccumUpdate")
+                 }
+                // if cummulativeFifteenSec - runningCummulative2second > 100 dump buffer for analysis as log.err coz should not be here
+                if (tickdlta > config.DA_DUMP_MIN_TICK_DLTA) {
+                    // dump buffer for analysis as log.err coz should not be here
+                }
+            }
+        }
+        await new Promise(resolve => setTimeout(resolve, TT_ROUTINE_SLEEP_SEC * 1000))
+    }
+
+ pxAccumUpdate() {      
+    const TT_PERP_PCAP_INTERVAL_SEC = 15 // perp 15 sec time to xceed the 250 tics  
+    // are we at the end of the TT_PERP_PCAP_INTERVAL_SEC. compare ts
+    let now = Math.floor(Date.now());
+    for (const tkr of CAP_EDGE_TICKERS) {
+        let mkt = this.marketMap[tkr]
+        let accpx = this.poolState[mkt.tkr].cumulativeTick
+        // if first time initialize
+        if ( !accpx ) {
+            // do we have any ticks to initialize. if not wait for next time
+            
+            if (this.tickBuff[tkr].bucket.length == 0) { continue }
+            // reduce ticks in tickBuff to get the cummulative tick
+            const cumtick = this.tickBuff[tkr].bucket.reduce( 
+                (accumulator, tickRecord) => {
+                    if (tickRecord.tick !== null) { return accumulator + tickRecord.tick }
+                    return accumulator; }, 0)
+
+            let acct = {
+                refCumTickTimestamp: now,
+                // sum all the ticks in the buffer
+                prevRefCumTick: cumtick,
+                refCumTick: cumtick,
+                currCumTick: cumtick
+            }
+            this.poolState[mkt.tkr].cumulativeTick = acct
+        }
+        // has the 15 sec interval passed
+        if ( accpx!.refCumTickTimestamp >= now - TT_PERP_PCAP_INTERVAL_SEC) {
+            accpx!.prevRefCumTick = accpx!.refCumTick
+            accpx!.refCumTick = accpx!.currCumTick
+        // current cummulative tick - refTick now is zero
+        accpx!.refCumTickTimestamp = now
+        this.poolState[mkt.tkr].cumulativeTick = accpx
+        }
+        else {  
+        // not at the end of the 15 sec interval. accumulate the current tick
+        let tickBuff = this.tickBuff[tkr].bucket
+        // pick up ticks since last cyle
+        let reftick = tickBuff.find((tk) => tk.timestamp > now - config.TT_ROUTINE_SLEEP_SEC)
+        // if no new ticks nothing to do
+        if ( reftick ) { 
+            // get all the ticks in tickBuff with timestamp between reftick.timestamp and now
+            let tickset = tickBuff.filter((tk) => tk.timestamp >= reftick!.timestamp && tk.timestamp <= now)
+            // aggregate all the ticks in tickList
+            let tickAccum = 0
+            for (const tk of tickset) { tickAccum += tk.tick! }
+            this.poolState[mkt.tkr].cumulativeTick!.currCumTick  = this.poolState[mkt.tkr].cumulativeTick!.currCumTick + tickAccum
+        }
+         }
+    }
+ }
 
     async arbitrageRoutine() {
         while (true) {
@@ -231,9 +607,9 @@ async dbg_get_uret() {
             await Promise.all(
                 Object.values(this.marketMap).map(async market => {
                     try {
-                        await this.arbitrage(market)
-                    } catch (err: any) {
-                        await this.jerror({ event: "ArbitrageError", params: { err } })
+                        //await this.arbitrage(market)
+                        await this.checksRoutine(market)
+                    } catch (err: any) { await this.jerror({ event: "XCEPT: " + market.name, params: { err } })
                     }
                 }),
             )
@@ -242,44 +618,317 @@ async dbg_get_uret() {
     }
 
     
- // TODO move to butil file
+//------------------
+// updatePoolData() accumulates tick changes for a given TP_TICK_TIME_INTERVAL, needed to gestimate if there is unidirection
  //------------------
- async isActive(leg: Market): Promise<boolean> {
+ /*
+ BKPupdatePoolData(): void {
+ for (const symb in this.poolState) {   
+    if (this.poolData[symb].bucket.length == 0) { continue }
+    if (this.poolData[symb].bucket.length == 0) { 
+        console.error(symb + " DEBUG: should not be here" + this.poolData[symb].lastRecord?.tick)
+        //victim of race condition. skip and see if next round will work
+        continue
+    }
+    // get tick delta from the tickBuff. Diff btw last and first in the buffer
+    const len = this.poolData[symb].bucket.length
+    const tickDelta = this.poolData[symb].bucket[len-1].tick! - this.poolData[symb].bucket[0].tick!
+    // set flag to let handler to reset tickLog
+    
+    this.poolData[symb].lastRecord.tick = tickDelta
+    this.poolData[symb].lastRecord.timestamp = Date.now()
+    //TODO.DEBT HACK work aournd the race condition. wrap in a setter/getter with mutex
+    // flag handler that ok to discard current buffer and start a new one (or throw old entries)
+    this.poolData[symb].isRead = true
+
+    //this.poolData[symb].prevTickDelta = this.poolData[symb].currTickDelta
+    this.poolData[symb].currTickDelta = tickDelta
+    
+    if (Math.abs(tickDelta) > config.TP_NOISE_MIN_TICK_DLTA) {
+        const csvString = `${symb},${Date.now()},${tickDelta}\n`;
+        fs.appendFile('tickdelt.csv', csvString, (err) => { if (err) throw err });
+    }
+ }
+}*/
+
+rotateEvtSubProvider() {
+    //rotateToNextEndpoint(callback = undefined) {
+        this.evtSubProvider.removeAllListeners()
+        const fromEndpoint = this.evtSubProviderEndpoints[this.evtSubEndpointsIndex];
+        this.evtSubEndpointsIndex = (this.evtSubEndpointsIndex + 1) % this.evtSubProviderEndpoints.length;
+        const toEndpoint = this.evtSubProviderEndpoints[this.evtSubEndpointsIndex];
+        // reinstall listeners
+        this.setupPoolListeners()
+        console.warn( Date.now() + " MONITOR: EvtSubProv Rotation from " + fromEndpoint + " to: " + toEndpoint)
+}
+  
+
+// DEP: poolData filled by eventListener
+// health check. 1) check foremost the proxies subscriptions are OK 2) check on the other pools
+// detect discontinuity and drain bucket 
+// tickBuff is the lowlevel DS using only by eventhandler and this checker that copies it inot statePool
+checkOnPoolSubEmptyBucket(): void {
+    for (const tkr in this.poolState) {   
+        // poll each pool to detect discontinuity and empty bucket
+        let ts = Date.now()
+        let len = this.tickBuff[tkr].bucket.length
+        let bucket = this.tickBuff[tkr].bucket
+        if (bucket.length == 0) { console.log(ts + " WARN: empty buckt: " + tkr) ; continue }
+
+        // detect discontinuity of events in poolData
+        let age = Date.now() - this.tickBuff[tkr].bucket[len-1].timestamp
+        let multiplier = 5 // to reduce noice
+        if ( age > multiplier * config.PRICE_CHECK_INTERVAL_SEC*1000 ) { 
+            console.log( Date.now() + " MONITOR: " + tkr + ": No events in " + (age/60000).toFixed() + " mins")
+            // if mkt is a proxy then if no events for more than CRITICAL time resuscribe
+            if (tkr in ["vBTC", "vETH", "vBNB"]) {
+                console.warn("WARN: " + tkr + " possible subscription problem. check Proxy subscriptions")
+            }
+            continue 
+        }
+        // copy bucket/ will not drain it. need to flag is read
+        this.poolState[tkr].bucket = [...this.tickBuff[tkr].bucket]
+        this.tickBuff[tkr].isRead = true
+
+        // log last tick value and its timestamp
+        const csvString = `${tkr},${this.poolState[tkr].bucket[len-1].timestamp},${this.poolState[tkr].bucket[len-1].tick}\n`;
+        fs.appendFile('tickdelt.csv', csvString, (err) => { if (err) throw err });
+    }
+    // check tail of the file how long since last timestamp
+    let csvContents = ''
+    try {
+        csvContents = fs.readFileSync('tickdelt.csv', 'utf-8')
+        const csvRows = csvContents.split('\n');
+        const lastRowString = csvRows[csvRows.length - 2]; // Subtract 2 to ignore empty last line
+
+        // Extract the timestamp value from the last row
+        const lastRowValues = lastRowString.split(',');
+        const ts = parseInt(lastRowValues[1])
+        const age = Date.now() - ts
+        //if ( (age) > 1000 * config.MON_MAX_TIME_WITH_NO_EVENTS_SEC ){
+        if ( (age) > 1000 * config.MON_MAX_TIME_WITH_NO_EVENTS_SEC ){
+            this.rotateEvtSubProvider()
+        }
+    } catch (err: any) {
+        if (err.code === 'ENOENT') { console.log('tick csv empty, skipping rotation check.');
+        } else { throw err; }
+      }
+}
+// process inbuff produced by eventListener to update cycle tick deltal for enabled markets
+// 2. pull last 30 mins of data. xlcuding 1), 1. pull the last cycle seconds of data. 3. if nothing 
+// in the last cycle worth, return, 4. if no tick in the 30min buff return, nxt minute for sure will have something
+// compute the weighted geometric mean for the rest of the 30 mins this will be the tickbasis
+// to compute tick delta change
+// TODO: normalize everyting to use returns including thresholds e.g aave 1.3 - 0.7
+
+// responsible with: 1) marking the cycle tick change 2) check on discontinuity of events 3) recording in csv
+// mktDirection check uses this deltas to asses conviction. TODO: to replace uret wich uses index price (ipx)
+processEventInputs(): void {
+  for (const tkr of this.enabledMarkets) {  
+    // this processors should allways pull before it wraps around
+    if ((this.evtBuffer[tkr]).hasWrapped()) { console.warn("WARN: circular buffer wrapped around for " + tkr) }
+    // compute current cyle-weighted-arithmetic-mean px aka wpx
+    const now = Date.now();
+    const cutoff = now - config.PRICE_CHECK_INTERVAL_SEC * 1000;
+    const cyclevals = this.evtBuffer[tkr].getDataAt(cutoff);
+    //set cyclevals to dbgTicks in debug
+    
+    // skip if no data since last cycle. first trace
+let cvals = cyclevals.map(obj => [obj.timestamp, obj.tick])
+if( config.TRACE_FLAG) { console.log(now + " TRACE: " + tkr + " ciclo: " + cvals) }
+    if (Object.keys(cyclevals).length == 0) { continue }
+
+    // compute the weighted arithmetic mean for the last cycle seconds
+    const cticks = Object.values(cyclevals);
+    const cweights = cticks.map((tick, i) => i + 1);
+    const wtick = this.computeWeightedArithAvrg(cticks, cweights);
+    // updated cycleTicks
+    this.poolState[tkr].wcycleTick= wtick
+    // pick highest magnitude value
+    if ( Math.abs(wtick) > Math.abs(this.poolState[tkr].wpeakTick) ) { this.poolState[tkr].wpeakTick = wtick }
+
+    // compute lastThirtyMinutes-memory (excluding the last cycle values)
+    // first ensure we have some memory
+    let membuffsz = this.evtBuffer[tkr].getLength()
+    if (membuffsz < cyclevals.length + 1) { return }
+    const lastThirtyMinutesStart = cutoff - 30 * 60 * 1000;
+    const lastThirtyMinutesData = this.evtBuffer[tkr].getDataAt(lastThirtyMinutesStart);
+    // compute lastThirtyMinutes (excluding the last cycle values)
+    lastThirtyMinutesData.splice(-cticks.length);
+if( config.TRACE_FLAG) { console.log(now + " TRACE: " + tkr + " membuff.sz: " + membuffsz) }
+
+    // compute the weighted arithmetic mean for the last thirty minutes
+    const buffvals = Object.values(lastThirtyMinutesData);
+    const bweights = buffvals.map((tick, i) => i + 1);
+    const tickBasis = this.computeWeightedArithAvrg(buffvals, bweights);
+if( config.TRACE_FLAG) { console.log(now + " TRACE: " + tkr + " wcycleTicks: " + wtick + " tickBasis: " + tickBasis) }
+
+    // update cycleDelta for each pool. consumed by mktDirection and soon maxloss
+    this.poolState[tkr].cycleTickDelta = wtick - tickBasis;
+    this.poolState[tkr].cycleTickDeltaTs = cyclevals[cyclevals.length-1].timestamp
+if( config.TRACE_FLAG) { console.log(now + " TRACE: " + tkr + " cTkDelta: " + this.poolState[tkr].cycleTickDelta) }
+    console.log( Date.now() + " MONITOR: " + tkr + ": cycleTickDelta: " + this.poolState[tkr].cycleTickDelta.toFixed(2) )
+
+    // check for discontinuity of events by comparing in the circular buffer age of the last buffer entry
+    const age = now - this.evtBuffer[tkr].getLatest().timestamp
+    if ( age > config.MON_MAX_TIME_WITH_NO_EVENTS_SEC * 1000 ) { 
+        console.log( now + " MONITOR: " + tkr + ": No events in " + (age/60000).toFixed() + " mins")
+        
+        // if too long and proxy ticker rotate provider to be safe
+        if ( tkr in ["vBTC", "vETH", "vBNB"]){
+            console.log( Date.now() + " MONITOR: Rotate on account of Max delay of" + tkr )
+            this.rotateEvtSubProvider()
+        }
+    }
+    // we already checked that there is new data in cylcevals
+    let last = cyclevals[cyclevals.length-1]
+    const csvString = `${tkr},${last.timestamp},${last.tick}\n`;
+    fs.appendFile('tickdelt.csv', csvString, (err) => { if (err) throw err });
+    }
+}
+
+async getPosVal(leg: Market): Promise<Number> {
+    let pv =  (await this.perpService.getTotalPositionValue(leg.wallet.address, leg.baseToken)).toNumber()
+    return pv
+ }
+
+ async isNonZeroPos(leg: Market): Promise<boolean> {
     let pos = (await this.perpService.getTotalPositionValue(leg.wallet.address, leg.baseToken)).toNumber()
     return (pos != 0)
  }
- async open(wlt: ethers.Wallet, btoken: string, side: Side, usdAmount: number ) {
+
+ async bkpopen(mkt: Market, usdAmount: number ) {
+    if (config.DEBUG_FLAG) {
+        console.log("DEBUG: open: " + mkt.name + " " + usdAmount)
+        return
+    }
     try {
-        await this.openPosition(wlt!, btoken ,side,AmountType.QUOTE,Big(usdAmount),undefined,undefined,undefined)
+        await this.openPosition(mkt.wallet, mkt.baseToken ,mkt.side ,AmountType.QUOTE,Big(usdAmount),undefined,undefined,undefined)
+            // no garanteed that collateral basis/start were updated on the assumed previous close
+            let scoll = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
+            mkt.idxBasisCollateral = scoll
+            mkt.startCollateral = scoll
+            // update mkt.size and mkt.basis using pool latest price
+            let sz = (await this.perpService.getTotalPositionSize(mkt.wallet.address, mkt.baseToken)).toNumber()
+            //TODO.DEBT ensure is not undefined
+            let price = Math.pow(1.001, this.poolState[mkt.tkr].tick!)
+            this.marketMap[mkt.name].openMark = price
+            // update startSize if first open or was open at restart
+            if (mkt.startSize == null) { mkt.startSize = sz }
+            // make sure to null on close
         }
         catch (e: any) {
             console.error(`ERROR: FAILED OPEN. Rotating endpoint: ${e.toString()}`)
             this.ethService.rotateToNextEndpoint()
-            await this.openPosition( wlt!,btoken,side,AmountType.QUOTE, Big(usdAmount),undefined,undefined,undefined )
+            await this.openPosition( mkt.wallet,mkt.baseToken,mkt.side,AmountType.QUOTE, Big(usdAmount),undefined,undefined,undefined )
             console.log("Re-oppened...")
         }
+ }
+
+ async open(mkt: Market, usdAmount: number ) {
+    if (config.DEBUG_FLAG) {
+        console.log("DEBUG: open: " + mkt.name + " " + usdAmount)
+        return
+    }
+    try {
+        await this.openPosition(mkt.wallet, mkt.baseToken ,mkt.side ,AmountType.QUOTE,Big(usdAmount),undefined,undefined,undefined)
+     }
+    catch (e: any) {
+        console.error(`ERROR: FAILED OPEN. Rotating endpoint: ${e.toString()}`)
+        this.ethService.rotateToNextEndpoint()
+        try {
+            await this.openPosition(mkt.wallet,mkt.baseToken,mkt.side,AmountType.QUOTE, Big(usdAmount),undefined,undefined,undefined)
+            console.log(Date.now() + " " + mkt.name + " INFO: Re-opened...")
+        } catch (e: any) {
+            console.error(`ERROR: FAILED SECOND OPEN: ${e.toString()}`)
+            throw e
+        }
+    }
+    // open was successful. update pricing
+        let scoll = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
+        console.warn("WARN: using twap based getAccountValue to compute basis. FIXME!")
+        mkt.idxBasisCollateral = scoll
+        mkt.startCollateral = scoll
+           // update mkt.size and mkt.basis using pool latest price
+           let sz = (await this.perpService.getTotalPositionSize(mkt.wallet.address, mkt.baseToken)).toNumber()
+           //TODO.DEBT ensure is not undefined
+           let price = Math.pow(1.001, this.poolState[mkt.tkr].tick!)
+           this.marketMap[mkt.name].openMark = price
+           // update startSize if first open or was open at restart
+           if (mkt.startSize == null) { mkt.startSize = sz }
+           // make sure to null on close
  }
 
  // close sort of dtor. do all bookeeping and cleanup here
  //REFACTOR: this.close(mkt) will make it easier for functinal styling
  // onClose startCollateral == basisCollateral == settledCollatOnClose
-async close(mkt: Market) {
+// re-implement provderRotationLogic
+
+
+
+ BKProtateToNextProvider() {
+    // upon running eth.rotateToNextEndpoint. listeners are lost. need to re-register against new provider in ethService
+    this.ethService.rotateToNextEndpoint()
+    this.setupPoolListeners()
+    //let tmstmp = new Date().toLocaleTimeString([], {hour12: false, timeZone: 'America/New_York'});
+    console.log(Date.now() + " SETUP: rereg listeners: " + this.ethService.provider.connection.url)
+ }
+
+ // takes [timestamp, tick] pairs and returns the weighted geometric mean of the ticks
+
+//TODO convert to geometric weighted mean
+computeWeightedArithAvrg(cticks: TickData[], cweights: number[]): number {
+    let sum = 0;
+    let weightSum = 0;
+    const n = cticks.length;
+    for (let i = n - 1; i >= 0; i--) {
+      const tick = cticks[i].tick;
+      const weight = cweights[n - 1 - i];
+      sum += tick * weight;
+      weightSum += weight;
+    }
+    return sum / weightSum;
+  }
+  
+  // Butils.ts
+  // check if data is new since last routine cyle
+  newDataAvailableAtTs(ts: Timestamp): boolean {
+    let now = Date.now()
+    let cutoff = now - config.PRICE_CHECK_INTERVAL_SEC*1000
+    if (ts > cutoff) { return true }
+    return false
+  }
+
+ async close(mkt: Market) {
+    if (config.DEBUG_FLAG) {
+        console.log("DEBUG: close: " + mkt.name)
+        return
+    }
     try {
         await this.closePosition(mkt.wallet, mkt.baseToken, undefined,undefined,undefined)
         //bookeeping: upd startCollateral to settled and save old one in basisCollateral
         let scoll = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
-        mkt.basisCollateral = scoll
+        mkt.idxBasisCollateral = scoll
         mkt.startCollateral = scoll
+        //reset peakTick. eventInput will set it again
+        mkt.wBasisCollateral = scoll
+        this.poolState[mkt.tkr].wpeakTick = scoll
+
+        // null out mkt.size and mkt.basis
+        this.marketMap[mkt.name].startSize = null
+        this.marketMap[mkt.name].openMark =null
         }
     catch (e: any) {
-            console.error(`ERROR: FAILED CLOSE. Rotating endpoint: ${e.toString()}`)
+            console.log(`ERROR: FAILED CLOSE ${mkt.name} Rotating endpoint: ${e.toString()}`)
             this.ethService.rotateToNextEndpoint()
             // one last try....
             await this.closePosition(mkt.wallet, mkt.baseToken, undefined,undefined,undefined)
-            console.log("RECOVERY: closed after rotation")
+            console.log(Date.now() + " SETUP: Recovery closed after rotation")
             throw e  
     }
  }
+
+
 // simpler override for close
 async closeMkt( mktName: string) {
     let mkt = this.marketMap[mktName]
@@ -295,7 +944,88 @@ async closeMkt( mktName: string) {
             throw e
         }
  } 
+ /*
+ async updateConfig() {
+   // Read CSV and store values in a dictionary
+   const collateralValues: Record<string, number> = {};
+   // wait for the csv to be generated
+   await this.genTWreport()
+ 
+   const csvData = fs.readFileSync('twreport.csv');
+   parse(csvData, {}, (err, rows) => {
+     if (err) {
+       console.error(err);
+       return;
+     }
+ 
+     for (const row of rows) {
+       if (row[3] === 'true') {
+         collateralValues[row[0]] = this.marketMap[row[0]].wBasisCollateral;
+       } else {
+         collateralValues[row[0]] = parseFloat(row[2]);
+       }
+     }
+ 
+     // Open config file and modify START_COLLATERAL values based on dictionary values
+     const configData = jsonfile.readFileSync('./src/configs/config.json');
+     for (const key in configData['MARKET_MAP']) {
+       if (key in collateralValues) {
+         configData['MARKET_MAP'][key]['START_COLLATERAL'] = collateralValues[key];
+       }
+     }
+ 
+     jsonfile.writeFileSync('config-draft.json', configData, { spaces: 4 });
+   });
+ }*/
+ 
+ 
+// dont hang around too much
+ async genTWreport() {
+    const writeStream = fs.createWriteStream('twreport.csv');
+    writeStream.write(`name, startCollat, endCollat, open\n`);
+  
+    for (const m of Object.values(this.marketMap)) {
+      let open = await this.isNonZeroPos(m) ? "true" : "false";
+      //let finalcollat = open ? this.poolState[m] : m.idxBasisCollateral
+      writeStream.write(`${m.name}, ${m.initCollateral}, ${m.idxBasisCollateral}, ${open}\n`);
+    }
+  
+    writeStream.on('finish', () => {
+      console.log('Report written successfully.');
+//      this.updateConfig()
+      process.exit(0);
+    });
+  
+    writeStream.on('error', (err) => {
+      console.error(`Failed to write report: ${err}`);
+      process.exit(1);
+    });
+  
+    writeStream.end();
+  }
 
+  BKPgenTWreport() {
+    const writeStream = fs.createWriteStream('twreport.csv');
+    writeStream.write(`name, startCollat, endCollat, isSettled\n`);
+  
+    for (const m of Object.values(this.marketMap)) {
+      const isSettled = m.startCollateral === m.idxBasisCollateral ? "true" : "false";
+      writeStream.write(`${m.name}, ${m.initCollateral}, ${m.idxBasisCollateral}, ${isSettled}\n`);
+    }
+  
+    writeStream.on('finish', () => {
+      console.log('Report written successfully.');
+      process.exit(0);
+    });
+  
+    writeStream.on('error', (err) => {
+      console.error(`Failed to write report: ${err}`);
+      process.exit(1);
+    });
+  
+    writeStream.end();
+  }
+  
 //----------------------------------
 //maxCumLossCheck(mkt: Market): Result<number> { return {value: null } }
 // DESCRPT test if a batok (base token) had ended roll and computes TW stats
@@ -328,12 +1058,153 @@ async rollEndTest(market: Market): Promise<boolean> {
     }
     return check
 }
+//----------------------------------
+// mktDirection
+//----------------------------------
+
+
+// determine from beth mkt direction. input poolData from updatePoolData 
+// cmp unpacking date to current cycle for both to det if this data
+
+// consumes data filled by processEventInpput
+mktDirectionChangeCheck(): void {
+ // recall cycleDelta is the 1min-weighted-tick - 30min-weighted-basis tick. if 
+    //check if new data is available
+    let btcDelta = 0, ethDelta = 0, bnbDelta = 0
+    let ts = this.poolState["vBTC"].cycleTickDeltaTs
+    if (this.newDataAvailableAtTs(this.poolState["vBTC"].cycleTickDeltaTs) ) { 
+        btcDelta = this.poolState["vBTC"].cycleTickDelta }  
+    if (this.newDataAvailableAtTs(this.poolState["vETH"].cycleTickDeltaTs) ) {
+        ethDelta = this.poolState["vETH"].cycleTickDelta }
+    if (this.newDataAvailableAtTs(this.poolState["vBNB"].cycleTickDeltaTs) ) {
+        bnbDelta = this.poolState["vBNB"].cycleTickDelta }
+    
+    // count how many deltas  > config.TP_DIR_MIN_TICK_DELTA
+    let deltas = [btcDelta, ethDelta, bnbDelta]
+    //trace
+if (config.TRACE_FLAG) { console.log(Date.now() + " TRACE: mktDir: " + btcDelta.toFixed() + ", " + ethDelta.toFixed() + ", " + bnbDelta.toFixed()) }
+    let jmps = deltas.filter(delta => Math.abs(delta) > config.TP_DIR_MIN_TICK_DELTA)
+    // zebra until proven different  
+    this.holosSide = Direction.ZEBRA
+    // HACK: if 2 out of 3 deltas > config.TP_DIR_MIN_TICK_DELTA AND same sign then we have conviction
+    if (jmps.length > 1 && jmps.every(delta => delta > 0)) { this.holosSide = Direction.TORO } 
+    else if (jmps.length > 1 && jmps.every(delta => delta < 0)) { this.holosSide = Direction.BEAR }
+    
+    if( btcDelta || ethDelta || bnbDelta) { 
+        console.log(Date.now() + " MKT: " + this.holosSide + ":" + btcDelta.toFixed() + ", " + ethDelta.toFixed() + ", " + bnbDelta.toFixed())
+    }
+}
+
+//----------------------------------
+// wakeUpCheck
+//-----
+async wakeUpCheck(mkt: Market): Promise<boolean> { 
+    // return if no new data or no new data i.e older than 1 cyle
+    let ts = this.poolState[mkt.tkr].cycleTickDeltaTs
+    let now = Date.now()
+    let cutoff = now - config.PRICE_CHECK_INTERVAL_SEC*1000
+if (config.TRACE_FLAG) { console.log(now + " TRACE: wakeUpCheck: " + mkt.tkr + " ctickDlt: " + ts + " cutoff: " + cutoff ) }
+    if (this.poolState[mkt.tkr].cycleTickDeltaTs < cutoff ) { return false }
+    
+    let tickDelta = this.poolState[mkt.tkr].cycleTickDelta
+    // if absolute tickDelta too small dont bother
+if (config.TRACE_FLAG) { console.log(now + " TRACE: wakeUpCheck: " + mkt.tkr + " tkdlt: " + tickDelta.toFixed()) }
+    if (Math.abs(tickDelta) < mkt.longEntryTickDelta) { return false }
+    
+  // wake up long/sThort on tick inc
+    let dir = this.holosSide
+    if ( (mkt.side == Side.LONG) && (tickDelta > mkt.longEntryTickDelta) && (dir == Direction.TORO) ) {
+        let pos = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
+        let sz = mkt.startCollateral / mkt.resetMargin
+        try { 
+            if(!pos) { 
+                await this.open(mkt,sz)
+                let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
+                console.log(tstmp + " INFO: WAKEUP:" + mkt.name + " Dt:" + tickDelta)
+                return true
+             } 
+        }
+        catch(err) { console.error(Date.now() + mkt.tkr +  " OPEN FAILED in wakeUpCheck") }
+    }
+    else if ( (mkt.side == Side.SHORT) && (tickDelta < 0)
+                                       && (Math.abs(tickDelta) > mkt.shortEntryTickDelta) 
+                                       && (dir == Direction.BEAR)) {
+        let pos = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
+        let sz = mkt.startCollateral / mkt.resetMargin
+        try {
+            if(!pos) {
+                await this.open(mkt,sz)
+                let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
+                console.log(tstmp + " INFO: WAKEUP:" + mkt.name + " Dt:" + tickDelta)
+                return true
+            }
+        }
+        catch(err) { console.error(Date.now() + mkt.tkr +  " OPEN FAILED in wakeUpCheck") }
+    }
+
+    if (tickDelta) {
+        console.log(this.holosSide + ": tickDelta:" + mkt.name + ": " + tickDelta)
+    }
+
+    return false
+}
+
+async BKPwakeUpCheck(mkt: Market): Promise<boolean> { 
+    // return if no new data or no new data i.e older than 1 cyle
+    let len = this.poolState[mkt.tkr].bucket.length
+    if (len == 0) { return false }
+    let cutoff = Date.now() - config.PRICE_CHECK_INTERVAL_SEC*1000
+    if (this.poolState[mkt.tkr].bucket[len-1].timestamp < cutoff ) { return false }
+    
+    // new data in bucket. NAIVE: get the dlta btwin last and first
+    let tickDelta = this.poolState[mkt.tkr].bucket[len-1].tick - this.poolState[mkt.tkr].bucket[0].tick
+
+    // if absolute tickDelta too small dont bother
+    if (Math.abs(tickDelta) < mkt.longEntryTickDelta) { return false }
+    
+  // wake up long/short on tick inc
+    let dir = this.holosSide
+    if ( (mkt.side == Side.LONG) && (tickDelta > mkt.longEntryTickDelta) && (dir == Direction.TORO) ) {
+        let pos = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
+        let sz = mkt.startCollateral / mkt.resetMargin
+        try { 
+            if(!pos) { 
+                await this.open(mkt,sz)
+                let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
+                console.log(tstmp + " INFO: WAKEUP:" + mkt.name + " Dt:" + tickDelta)
+                return true
+             } 
+        }
+        catch(err) { console.error(Date.now() + mkt.tkr +  " OPEN FAILED in wakeUpCheck") }
+    }
+    else if ( (mkt.side == Side.SHORT) && (tickDelta < 0)
+                                       && (Math.abs(tickDelta) > mkt.shortEntryTickDelta) 
+                                       && (dir == Direction.BEAR)) {
+        let pos = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
+        let sz = mkt.startCollateral / mkt.resetMargin
+        try {
+            if(!pos) {
+                await this.open(mkt,sz)
+                let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
+                console.log(tstmp + " INFO: WAKEUP:" + mkt.name + " Dt:" + tickDelta)
+                return true
+            }
+        }
+        catch(err) { console.error(Date.now() + mkt.tkr +  " OPEN FAILED in wakeUpCheck") }
+    }
+
+    if (tickDelta) {
+        console.log(this.holosSide + ": tickDelta:" + mkt.name + ": " + tickDelta)
+    }
+
+    return false
+}
 
 //----------------------------------
 // trigger: roll ended
 // if sideless open both sides (twins). else only the favored side of the twins
 // ASSERT this.leg and twin have no position
-
+/*
 async rollEndCheck(market: Market): Promise<boolean> { 
 // check first if this check running for this mkt
 let check = false
@@ -410,6 +1281,7 @@ console.log(tstmp + ": INFO ROLL.END[" + market.name + "] leg-twin col: " + leg.
     console.log("UnlockRollEndCheck")
     return  check
 }
+*/
 //----------------------------------------------------------------------------------------------------------
 // DESC: if both dados are stopped then is end of roll and rethrow both dados
 // COND-ACT: 
@@ -487,11 +1359,12 @@ async rollEndCheck(market: Market): Promise<Result<boolean>> {
 // losing gang has been identified however will pardon anyone in the loser gang with good perf 
 // e.g TP_MIN_PARDON_RATIO > 1.1
 // ASSERT holosSide is NOT null and changed from one non-zbra to another non-zbra
+/*
 async putWrongSideToSleep() : Promise<Result<boolean>> {
     let check = false
     let errStr = ""
     // only the undead can go to sleep
-    let activeMkts = Object.values(this.marketMap).filter(async m => (await this.isActive(m) == true))
+    let activeMkts = Object.values(this.marketMap).filter(async m => (await this.nonZeroPos(m) == true))
     .map( m => m.name)
     // groupby long/short gangs among the actives
     const longShortGang = activeMkts.reduce<{ sgang: string[], lgang: string[] }>
@@ -520,7 +1393,34 @@ async putWrongSideToSleep() : Promise<Result<boolean>> {
         }
     return {positive: check, error: Error(errStr) }
 }
+*/
 
+// called after maxloss completed. 
+async solidarityKill(unfavSide: Side) {
+    // filter nonzero position in unfavSide
+    let deathrow: Market[] = []
+    for (const m of Object.values(this.marketMap)) {
+      let pos = await this.getPosVal(m)
+      if (pos !== 0 && m.side === unfavSide) { deathrow.push(m) }
+    }
+    // clemency for good performers
+    let pardonned = Object.values(deathrow)
+                          .filter((n) => n.idxBasisCollateral / n.startCollateral > config.TP_MIN_PARDON_RATIO )
+    // cull the undesirebles
+    console.log(`INFO: PARDONNED:  ${pardonned.map(m => m.name).join(', ')}`);
+
+    let toExecute = deathrow.filter( (n) => !pardonned.includes(n) )
+    if (toExecute.length) {
+        for (const m of deathrow ) {
+            let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
+            console.log(tstmp + " INFO: SolKill: " + m.name)
+            try { await this.close(m) }
+            catch { "QRM.Close failed:" + m.name }
+        }
+    }
+}
+
+/*
 
 // DESC: flags if regime switch to one sided (bull or bear) really is a Participation signal
 // uret < TP_QRM_MIN_RET. this value SHOULD be higher than TP_MAX_LOSS_RATIO e.g if maxloss is 91 
@@ -576,25 +1476,77 @@ async oneSidedTransitionCheck() :Promise<boolean> {
 
         return check
 }  
-
+*/
 async putMktToSleep(mkt: Market) {
     try {
         await this.close(mkt) 
-
     }
     catch(err) {
         console.error("Failed closed in putMktToSleep")
     }
-    // compute terminal wealth contribution before overwrite
-            // below no longer needed done in dtor/close
-            //let scoll = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
-            //this.marketMap[mkt.name].startCollateral = scoll
-            // note: this.close takes care of updating collat values
-            let oldStartCol = mkt.basisCollateral
+         let oldStartCol = mkt.idxBasisCollateral
             let settledCol = mkt.startCollateral //updated in this.close
             let ret = 1 + (settledCol-oldStartCol)/oldStartCol
             let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
     console.log(tstmp + ": INFO: Kill " + mkt.name + ", stldcoll: " + settledCol.toFixed(4) + " rret: " + ret.toFixed(2))
+}
+
+async holosCheck() :Promise<boolean> {
+// compute poolState tick changes segragating positive vs negative
+this.poolState
+    return false
+}
+// index based pnl used in banger
+async getIdxBasedPnl(mkt: Market) : Promise<number>{
+    // pnl = sz * (pxcurrent -pxStart) ; 
+    
+    // note that current size maybe gt start size if already releveraged
+    let csz = (await this.perpService.getTotalPositionSize(mkt.wallet.address, mkt.baseToken)).toNumber()
+    // margin rate basis also may have changed from start on prior relevs
+    // will use ipx for current valuation (same as perp uses). basis price wil be derived from basisMargin
+
+    let currentPx = (await this.perpService.getIndexPrice(mkt.baseToken)).toNumber()
+    // using initial collateral to see what the protocol sees.
+    // mrstart = [pnl = 0 + collateraStart]/sz*pxstart =>  pxStart = collatStart/[sz*mrStart]
+    let basisPrice = mkt.initCollateral/(csz*mkt.basisMargin)
+    // pnl = sz * (pxcurrent -pxStart) ; 
+    let pnl = csz * (currentPx - basisPrice)
+if (config.TRACE_FLAG) { console.log("TRACE: getIndxPnl" + mkt.name + " sz: " + csz + " px: " + currentPx + " basispx: " + basisPrice + " pnl: " + pnl) }
+    return pnl
+}
+
+// equivalent to accountValue (pnlAdjusted value). pnl using cycle-weighted-price cwp not memory weighted price (mwp)
+// calculation: currCollatVal = basisCollateral + pnl = peakCollateral + pnl
+// pnl = currPosVal - peakPosVal = wcp*size - peakPrice*size = size *(wcp - peakPrice)
+
+ async getPnlAdjCollatValue(mkt: Market) :Promise<number> {
+    // should only get here if tick, size and openMark are defined
+    let wpnl = 0
+    // get current position value. mkt.size is updated by this.open and this.close
+    // price from wctick aka wpx
+    //let markprice = this.poolState[mkt.tkr].cumulativeTick?.refCumTick
+    let currtk = this.poolState[mkt.tkr].wcycleTick
+    let peaktk = this.poolState[mkt.tkr].wpeakTick
+    // either of the two zero. return basisCollateral
+    if (!currtk || !peaktk) {return mkt.wBasisCollateral}
+
+    let currpx = Math.pow(1.0001, currtk)
+    let wpeakpx = Math.pow(1.0001, peaktk)
+    let siz = await this.perpService.getTotalPositionSize(mkt.wallet.address, mkt.baseToken)
+
+    // sz negative for short
+    let sz = Math.abs(siz.toNumber())
+
+    //let pval = sz.toNumber() * markPrice
+    // get start position value. updated by this.open. this.close sets it to null
+    //let startPval = mkt.startSize! * mkt.openMark! 
+    //wpnl = pval - startPval
+   // pnl = sz*(wcp - peakPrice)
+    wpnl = sz*( currpx- wpeakpx)
+    let currCollatVal = mkt.idxBasisCollateral + wpnl
+if(config.TRACE_FLAG) { console.log(Date.now() + "wcol: " + mkt.name + " currpx: " + currpx.toFixed(4) + " wpeakpx: " + wpeakpx.toFixed(4) + " sz: " + sz.toFixed())}
+    console.log(Date.now() + " wcol: " + mkt.name + " currcol: " + currCollatVal.toFixed(4) + " wpnl: " + wpnl.toFixed(4) )
+    return currCollatVal
 }
 
 //----------------------------------------------------------------------------------------------------------
@@ -604,31 +1556,248 @@ async putMktToSleep(mkt: Market) {
 // Error: throws open/close
 // NOTE: when dado is stopped 
 //----------------------------------
-
-async legMaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
+// compute unrealized return using wcp. basis is the peak value/ current value is posizion size * wcp
+// since we are using peakCollateral as collateral basis, we need to use peakPrice when computing uret
+async maxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
     // skip if market inactive
-    let check = false
+    let check = false ; let markPnl = 0 ; let mret = null
     let leg = this.marketMap[mkt.name]
-    if (await this.isActive(leg)) { 
+    if (await this.isNonZeroPos(leg)) { 
         // collatbasis is the peak colateral
-        let collatbasis = mkt.basisCollateral
-        const col = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
-        let uret = 1 + (col - collatbasis)/collatbasis
-        if (uret < config.TP_MAX_ROLL_LOSS ) {
-            check = true // mark check positive 
-        }
-        // peak update
-        // startCollateral is always realized. basisCollateral unrealized
-        if (col > collatbasis) { 
-            mkt.basisCollateral = col 
-        }  
-        // update uret used by qrom holos check
-        mkt.uret = uret
-        console.log(mkt.name + " cbasis:" + mkt.basisCollateral.toFixed(2) + " uret:" + uret.toFixed(4))
+        let collatbasis = mkt.idxBasisCollateral
+        let wcollatbasis = mkt.wBasisCollateral
+        // initially print both, plus good to check on divergencd
+        const wcol = await this.getPnlAdjCollatValue(mkt)
+        // getAccountValue is based on index price
+        const icol = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
+    
+        //peak tick updated by eventInput procesor. they should match
+        if (icol > mkt.idxBasisCollateral) { mkt.idxBasisCollateral = icol }
+        if (wcol > mkt.wBasisCollateral) { mkt.wBasisCollateral = wcol }
+
+         let uret = 1 + (icol - collatbasis)/collatbasis
+         let wret = 1 + (wcol - wcollatbasis)/wcollatbasis
+        if (uret < config.TP_MAX_ROLL_LOSS ) { check = true  }// mark check positive 
+
+          console.log(mkt.name + " ibasis:" + mkt.idxBasisCollateral.toFixed(2) + "idx uret: " + uret.toFixed(4) +
+          " wret:" + wret.toFixed(4) + " wbasis:" + mkt.wBasisCollateral.toFixed(2));
     } 
     return check 
   }
 
+async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
+    // skip if market inactive
+    let check = false ; let markPnl = 0 ; let mret = null
+    let leg = this.marketMap[mkt.name]
+    if (await this.isNonZeroPos(leg)) { 
+        // collatbasis is the peak colateral
+        let collatbasis = mkt.idxBasisCollateral
+        let wcollatbasis = mkt.wBasisCollateral
+        // initially print both, plus good to check on divergencd
+        const wcol = await this.getPnlAdjCollatValue(mkt)
+        // getAccountValue is based on index price
+        const icol = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
+    
+        //peak tick updated by eventInput procesor. they should match
+        if (icol > mkt.idxBasisCollateral) { mkt.idxBasisCollateral = icol }
+        if (wcol > mkt.wBasisCollateral) { mkt.wBasisCollateral = wcol }
+
+         let uret = 1 + (icol - collatbasis)/collatbasis
+         let wret = 1 + (wcol - wcollatbasis)/wcollatbasis
+        if (uret < config.TP_MAX_ROLL_LOSS ) { check = true  }// mark check positive 
+
+        // TODO: relative index price rip: rint
+    
+        // update uret used by qrom holos check. Used at all?? rmv
+        //mkt.uret = uret
+        // compute uret based on current wcp  and basisCollateral
+        //let tk = this.poolState[mkt.tkr].tick
+        // use cumrefTick as markprice
+        
+        /*/let tk = this.poolState[mkt.tkr].cumulativeTick?.refCumTick
+        if (mkt.startSize && mkt.openMark && tk) { 
+            //markPnl = await this.getMarkPnl(mkt, tk) 
+            // (collatbasis + markPnl - collatbasis)/collatbasis = 1 + markPnl/collatbasis
+            mret = 1 + (wcol)/collatbasis
+        }
+        else if (!mkt.startSize || !mkt.openMark) { // if no mkt size, pos WAS open at restart. get it from perpService
+            if (!mkt.startSize) {
+              mkt.startSize = (await this.perpService.getTotalPositionSize(mkt.wallet.address, mkt.baseToken)).toNumber();
+            }
+            if (!mkt.openMark) {
+              let twappx = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber();
+              console.warn("WARN: using twap to set openMark in: " + mkt.name)
+              this.marketMap[mkt.name].openMark = twappx/mkt.startSize
+            }
+          }
+          */
+          console.log(mkt.name + " ibasis:" + mkt.idxBasisCollateral.toFixed(2) + "idx uret: " + uret.toFixed(4) +
+          " wret:" + wret.toFixed(4) + " wbasis:" + mkt.wBasisCollateral.toFixed(2));
+    } 
+    return check 
+  }
+// compute mr as ratio of collateral to position value. use startCollatera and ok to use the index valuation since something
+// similar is waht perp uses: mr = [startcollat + pn]/sz*ipx
+
+  async maxMaxMarginRatioCheck(market: Market) {
+    if ( !(await this.isNonZeroPos(market)) ) {return}
+    // compute current mr = [startcollat + pn]/sz*ipx
+//W_END: hack    
+    //let pnl = await this.getIdxBasedPnl(market)  <-- WRONG PNL AND CURR MR calculation
+    let perppnl = (await this.perpService.getUnrealizedPnl(market.wallet.address)).toNumber()
+    
+    let perpmr = await this.perpService.getMarginRatio(market.wallet.address)
+    // if pmr null then throw error
+    if (!perpmr) { 
+        console.log("FAIL: pmr null in maxMaxMarginRatioCheck")
+        throw new Error("ERROR: pmr null in maxMaxMarginRatioCheck")
+    }
+//W_END: hack    
+    let idxPrice = (await this.perpService.getIndexPrice(market.baseToken)).toNumber()
+    let csz = (await this.perpService.getTotalPositionSize(market.wallet.address, market.baseToken)).toNumber()
+    //let currMR = (market.startCollateral + pnl)/(csz *idxPrice )  <--- WRONG PNL AND CURR MR calculation
+//if (config.TRACE_FLAG) { console.log("TRACE: " + market.name + " mr: " + currMR.toFixed(4) + " pnl: " + pnl.toFixed(4))}
+if (config.TRACE_FLAG) { console.log("TRACE: " + market.name + " perpmr: " + perpmr.toFixed(4) + " perppnl: " + perppnl.toFixed(4))}
+// if perppnl negative ret
+if (perppnl < 0) { return }
+let freec = (await this.perpService.getFreeCollateral(market.wallet.address)).toNumber()
+const HAIRCUT = 0.975
+const MIN_FREEC = 1 
+if (freec < MIN_FREEC ) { 
+    console.log("WARN: freec: " + market.name + ": " + freec.toFixed() + " too low in maxMaxMarginRatioCheck")
+    return }
+
+// compute size of position to RESET back: mr = [startcollat + pn]/sz*ipx => sz = [startcollat + pn]/mr/ipx
+let nxtsz = (market.startCollateral + perppnl)/(market.resetMargin*idxPrice)
+let incsz = nxtsz - Math.abs(csz)
+let resetamnt = Math.abs(incsz)*idxPrice
+// usdAmount will be the minimum of the reset amount and the free collateral
+let usdAmount = Math.min(resetamnt, freec)*HAIRCUT
+if (perpmr.toNumber() > market.maxMarginRatio) {
+    //let usdAmount = config.TP_SCALE_FACTOR*Math.abs(csz)*idxPrice 
+    try { await this.open(market, usdAmount) 
+        console.log(Date.now() + " INFO: scale " + market.name + " mr: " + perpmr.toFixed(4) +  
+                                  " usdamnt: " + usdAmount.toFixed() + " freec: " + freec.toFixed())
+    }
+    catch { console.log(Date.now() + ", maxMargin Failed Open,  " +  market.name )}
+}
+/* W_END: hack
+if (currMR > market.maxMarginRatio) {
+        let usdAmount = config.TP_SCALE_FACTOR*Math.abs(csz)*idxPrice 
+        try { await this.open(market, usdAmount) 
+            console.log(Date.now() + " INFO: scale " + market.name + " mr: " + currMR.toFixed(4) +  "usdamnt: " + usdAmount.toFixed())
+        }
+        catch { console.log(Date.now() + ", maxMargin Failed Open,  " +  market.name )}
+    }*/
+
+}
+
+// FIXME: use the new way >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+async BKPmaxMaxMarginRatioCheck(market: Market) {
+    // current marginratio = collat+upnl/positionVal. note collat + upnl == basisCollateral
+    let pv = (await this.perpService.getTotalAbsPositionValue(market.wallet.address)).toNumber()
+    let tick = this.poolState[market.tkr].tick
+    // skip if no position
+    if (pv == 0 || tick == 0) return
+    let mr = market.idxBasisCollateral/pv
+    if (mr > market.maxMarginRatio ){
+    // compute additional size to bring down the margin ratio to reset value
+    // mr = (collatBasis)/positionValue=positionSize*price => positionSize = collatBasis/price*mr
+    
+        let tickPrice = Math.pow(1.0001, tick!)
+        let idxPrice = (await this.perpService.getIndexPrice(market.baseToken)).toNumber()
+        let mktPrice = (await this.perpService.getMarketPrice(market.tkr)).toNumber()
+
+    // tick price results in mr higher than reset. go for lowest price
+    // BUG: pick min for long and max for short. for now just use the mark price
+    let price = mktPrice
+
+    let sz  = market.idxBasisCollateral/price*market.resetMargin
+    // add to the position and recompute margin ratio
+    await this.open(market, sz*price)
+
+    pv = (await this.perpService.getTotalAbsPositionValue(market.wallet.address)).toNumber()
+    let newmr = market.idxBasisCollateral/pv
+    let tstmp = new Date().toLocaleTimeString([], {hour12: false, timeZone: 'America/New_York'});
+    console.warn("mr trigger was based on index price")
+    console.log(tstmp + " INFO: tick, indx, market Price: " + tickPrice + " " + idxPrice + " " + mktPrice)
+    console.log(tstmp + " INFO: MARGIN RESET: " + market.name + " prv mr:" + mr.toFixed() + " nu mr:" + newmr.toFixed() + " sz:" + sz)
+    }
+}
+//--------------------------------------------------------------------------------------
+// TODO: factor out this check from of here
+//--------------------------------------------------------------------------------------
+async ensureSwapListenersOK(): Promise<void> {
+    // just need to check any one pool if the listener not there probably not for all and reinstall
+    // TODO. do also a check if csv has not been updated?
+    const testPool = this.poolState['vSOL'].poolContract;
+    const swapListenerCount = await testPool.listenerCount('Swap');
+    if (swapListenerCount === 0) {
+        this.setupPoolListeners();
+        console.log(Date.now() + this.ethService.provider.connection.url + ' INFO: Swap listeners reinstalled');
+    }
+  }
+  
+//  mainRoutine
+// TODO: OPTIMIZE: batch all checks for all legs. can avoid unnecessary checks e.g if SHORT leg above threshold twin will not
+//--------------------------------------------------------------------------------------
+  async checksRoutine(market: Market) {
+    //TODO.BIZCONT redo ensureSwapListenersOK, it will always return listerneCounter of zero coz new instance
+    //await this.ensureSwapListenersOK()
+    // new cycle. update cycle deltas based on what events have been received since last cycle
+    this.processEventInputs()
+
+    // now that cycle events delta. first things first.check for TP_MAX_LOSS
+    if ( await this.maxLossCheckAndStateUpd(market) ) {   // have a positive => close took place. check for qrom crossing
+        await this.putMktToSleep(market)
+
+        // >>>>>>>>>>>>>> UNCOMMENT THIS TO ENABLE SOLIDARITY KILL
+        //await this.solidarityKill(market.side)  WARN: diabling until fix return
+    }
+    //updat pool data
+    //this.checkOnPoolSubEmptyBucket() //<========================== poolSubChecknPullBucket
+    this.mktDirectionChangeCheck()  // asses direction. WAKEUP deps on this
+      // MMR. maximum margin RESET check
+    await this.maxMaxMarginRatioCheck(market)
+    await this.wakeUpCheck(market) //wakeup only favored leg if sided mkt else both
+  }
+  
+    // check if there is a direction change into a non-zebra beast
+    async holosDirectionChangeCheck(): Promise<boolean> {
+        // which pools have moved at least say 10 ticks to ignore noise
+        const minMoveList = Object.values(this.poolState).filter(
+            (pool) =>( Math.abs(pool.tick! - pool.prevTick!) > config.TP_QROM_ABS_TICK_SZ )
+                      && (pool.prevTick!) != 0 )
+            // segregate positive and negative moves
+        if (minMoveList.length) {
+          const posPools = minMoveList.filter((pool) => pool.tick! - pool.prevTick! > 0
+          );
+          const negPools = minMoveList.filter((poolState) => poolState.tick! - poolState.prevTick! < 0
+          );
+          
+          // update direction if meets threadhold
+          let currDir
+          let count = Object.keys(this.poolState).length
+          if ((posPools.length / count > config.TP_QRM_DIR_CHANGE_MIN_PCT)  && 
+              (negPools.length / count < config.TP_QRM_DIR_CHANGE_MIN_PCT)) {
+                currDir = Direction.TORO;
+          } 
+          if ((negPools.length / count > config.TP_QRM_DIR_CHANGE_MIN_PCT)  && 
+              (posPools.length / count < config.TP_QRM_DIR_CHANGE_MIN_PCT)) {
+                currDir = Direction.BEAR;
+          } 
+          if ((this.prevHolsSide !== currDir) && (currDir === Direction.TORO || currDir === Direction.BEAR)) {
+            // update direction and return true
+            this.prevHolsSide = this.holosSide //save before overwrite
+            this.holosSide = currDir
+            return true
+          }
+        } 
+
+        return false
+    }
+/* HIDE 
     async arbitrage(market: Market) {
             if ( await this.legMaxLossCheckAndStateUpd(market) ) {   // have a positive => close took place. check for qrom crossing
                 this.putMktToSleep(market)
@@ -640,9 +1809,9 @@ async legMaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
             // ROLL.END.Condition: (!mkt.active &&  !mk.twin.active)
             //if (await this.rollEndTest(market)) {
             await this.rollEndCheck(market) //wakeup only favored leg if sided mkt else both
-        }
+     }
  
-/* HIDE        
+       
         //--- Get pnl/free collat
         //--- factor out to avoid recomputing unnecesary on most cycles
         let wlt = this.ethService.privateKeyToWallet(this.pkMap.get(market.name)!)
@@ -930,5 +2099,5 @@ HIDE */
                                                        nlevrj: newlvrj, ncoll: +newcoll},} )
         }
         
-    }*/
+e    }*/
 }

@@ -45,7 +45,8 @@ launch.json
 * hardhat environment setup
 **setup hardhat fork**
 - install hardhat in a local directory
-cd /Users/ayb/mio/code/tinker/dft/hh
+  
+> cd /Users/ayb/mio/code/tinker/dft/hh
 
 
 - ensure using your own signer in local node
@@ -112,20 +113,40 @@ https://opt-mainnet.g.alchemy.com/v2/oH4_c4rONzDHSXUvSdFpuXAmgMpvsQIi
 - s
   - [ ] scenario: SOLshort at 65131100
     - [ ] pair: (0x7Ca51ce88195eD6a2C7289DD1B286a713fbD806b,
-    - [ ] uret: 0.9567
+    - [ ] uret:.0.7358
+    - [ ] sz: 2.5272575239729007
   - [ ] trigger onLoss, onScale by chaning MIN_RET/MAX_RET 96/95
   - [ ] hardhat supports only one signer. use 'bypass dotenv' debug config using only one
   - [ ] config turn false everything xcept solshort
 
+    /Users/ayb/mio/code/tinker/dft/hh
 *** qa testing
 - i
   - [ ] use single name, low lev but high sensitivity  e.g .98, 1.02 to force logic at low cost
-* GOTCHAS
-** debugger acting weird
+** push to a new branch e.g spi
+   - on local
+     - [ ] git branch ; make sure u r in spi branch [git branch;
+     - [ ] git checkout spi ; if not there]
+     - [ ] push: git push origin spi
 
+   - on remote
+     - [ ] git fetch to pull the branch
+     - [ ] git checkout spi
+     - [ ] git branch ;to make sure on rite branch
+     - [ ] git pull origin spi
+* GOTCHAS
+
+** debugger acting weird
 - prob: e.g disappering or breaking in wrong place. 
 - remedy: delete all breakpoints and set again. stop debugger. save and restart
 
 ** hardhat limitations
 - hardhat use only one signer (first account on the config) can only test one market
 at a time
+
+** Agujeros-Accel
+*** agujero: dont monkey stack. after one xts ask
+    what am i trying to do
+    how to do diff
+*** accel: use conditional breakpoint
+    

@@ -241,7 +241,7 @@ export class Arbitrageur extends BotService {
     //private pkMap = new Map<string,string>([...Object.entries(pkconfig.PK_MAP)])
     private resetMap = new Map<string, boolean>()
     private pkMap = new Map<string, string>()
-     marketMap: { [key: string]: Market } = {}
+    marketMap: { [key: string]: Market } = {}
     private readonly arbitrageMaxGasFeeEth = Big(config.ARBITRAGE_MAX_GAS_FEE_ETH)
     private holosSide: Direction = Direction.ZEBRA
     private prevHolsSide: Direction = Direction.ZEBRA

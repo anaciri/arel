@@ -834,33 +834,6 @@ async getPosVal(leg: Market): Promise<Number> {
     return (pos != 0)
  }
 
- async bkpopen(mkt: Market, usdAmount: number ) {
-    if (config.DEBUG_FLAG) {
-        console.log("DEBUG: open: " + mkt.name + " " + usdAmount)
-        return
-    }
-    try {
-        await this.openPosition(mkt.wallet, mkt.baseToken ,mkt.side ,AmountType.QUOTE,Big(usdAmount),undefined,undefined,undefined)
-            // no garanteed that collateral basis/start were updated on the assumed previous close
-            let scoll = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
-            mkt.idxBasisCollateral = scoll
-            mkt.startCollateral = scoll
-            // update mkt.size and mkt.basis using pool latest price
-            let sz = (await this.perpService.getTotalPositionSize(mkt.wallet.address, mkt.baseToken)).toNumber()
-            //TODO.DEBT ensure is not undefined
-            let price = Math.pow(1.001, this.poolState[mkt.tkr].tick!)
-            this.marketMap[mkt.name].openMark = price
-            // update startSize if first open or was open at restart
-            if (mkt.startSize == null) { mkt.startSize = sz }
-            // make sure to null on close
-        }
-        catch (e: any) {
-            console.error(`ERROR: FAILED OPEN. Rotating endpoint: ${e.toString()}`)
-            this.ethService.rotateToNextEndpoint()
-            await this.openPosition( mkt.wallet,mkt.baseToken,mkt.side,AmountType.QUOTE, Big(usdAmount),undefined,undefined,undefined )
-            console.log("Re-oppened...")
-        }
- }
 
  async open(mkt: Market, usdAmount: number ) {
     if (config.DEBUG_FLAG) {
@@ -871,14 +844,14 @@ async getPosVal(leg: Market): Promise<Number> {
         await this.openPosition(mkt.wallet, mkt.baseToken ,mkt.side ,AmountType.QUOTE,Big(usdAmount),undefined,undefined,undefined)
      }
     catch (e: any) {
-        console.error(`ERROR: FAILED OPEN. Rotating endpoint: ${e.toString()}`)
+        console.error(mkt.name + ` ERROR: FAILED OPEN. Rotating endpoint: ${e.toString()}`)
         this.ethService.rotateToNextEndpoint()
         try {
             await this.openPosition(mkt.wallet,mkt.baseToken,mkt.side,AmountType.QUOTE, Big(usdAmount),undefined,undefined,undefined)
             console.log(Date.now() + " " + mkt.name + " INFO: Re-opened...")
         } catch (e: any) {
             console.error(mkt.name + `: ERROR: FAILED SECOND OPEN: ${e.toString()}`)
-            console.log("FAIL: second reopen" + Date.now() + " " + mkt.name)
+            console.log(Date.now() + "," + mkt.name + ",FAIL: second reopen failed")
             throw e
         }
     }
@@ -957,7 +930,7 @@ computeWeightedArithAvrg(cticks: TickData[], cweights: number[]): number {
         this.marketMap[mkt.name].openMark =null
         }
     catch (e: any) {
-            console.log(`ERROR: FAILED CLOSE ${mkt.name} Rotating endpoint: ${e.toString()}`)
+            console.log(mkt.name + ` ERROR: FAILED CLOSE ${mkt.name} Rotating endpoint: ${e.toString()}`)
             this.ethService.rotateToNextEndpoint()
             // one last try....
             await this.closePosition(mkt.wallet, mkt.baseToken, undefined,undefined,undefined)
@@ -974,7 +947,7 @@ async closeMkt( mktName: string) {
         await this.closePosition(mkt.wallet, mkt.baseToken, undefined,undefined,undefined)
         }
         catch (e: any) {
-            console.error(`ERROR: FAILED CLOSE. Rotating endpoint: ${e.toString()}`)
+            console.error(mkt.name + ` ERROR: FAILED CLOSE. Rotating endpoint: ${e.toString()}`)
             this.ethService.rotateToNextEndpoint()
             await this.closePosition(mkt.wallet, mkt.baseToken, undefined,undefined,undefined)
             console.log("closed...")
@@ -1520,7 +1493,7 @@ async putMktToSleep(mkt: Market) {
         await this.close(mkt) 
     }
     catch(err) {
-        console.error("Failed closed in putMktToSleep")
+        console.error(mkt.name + " Failed closed in putMktToSleep")
     }
          let oldStartCol = mkt.idxBasisCollateral
             let settledCol = mkt.startCollateral //updated in this.close

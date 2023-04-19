@@ -35,7 +35,8 @@ export async function main(): Promise<void> {
     //process.on("SIGINT", () => { console.log("Process is exiting..."); arbitrageur.genTWreport(); })
     //process.on("beforeExit", () => { console.log("Process is exiting..."); arbitrageur.genTWreport(); })
     //process.on("SIGINT", () => { console.log("Received SIGINT signal...");arbitrageur.genTWreport(); process.exit(0); })
-    process.on("SIGINT", () => { console.log("INFO: Generating report..."); arbitrageur.genTWreport();})
+    //process.on("SIGINT", () => { console.log("INFO: Generating report..."); arbitrageur.genTWreport();})
+    process.on("SIGINT", async () => { console.log("INFO: Generating report..."); await arbitrageur.genTWreport();})
     await arbitrageur.setup()
     await arbitrageur.start()
 }

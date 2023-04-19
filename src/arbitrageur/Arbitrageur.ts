@@ -877,7 +877,8 @@ async getPosVal(leg: Market): Promise<Number> {
             await this.openPosition(mkt.wallet,mkt.baseToken,mkt.side,AmountType.QUOTE, Big(usdAmount),undefined,undefined,undefined)
             console.log(Date.now() + " " + mkt.name + " INFO: Re-opened...")
         } catch (e: any) {
-            console.error(`ERROR: FAILED SECOND OPEN: ${e.toString()}`)
+            console.error(mkt.name + `: ERROR: FAILED SECOND OPEN: ${e.toString()}`)
+            console.log("FAIL: second reopen" + Date.now() + " " + mkt.name)
             throw e
         }
     }

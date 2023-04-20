@@ -1647,10 +1647,52 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
     } 
     return check 
   }
-// compute mr as ratio of collateral to position value. use startCollatera and ok to use the index valuation since something
-// similar is waht perp uses: mr = [startcollat + pn]/sz*ipx
 
-  async maxMaxMarginRatioCheck(market: Market) {
+async maxLeverageTriggerCheck(market: Market) {
+    if ( !(await this.isNonZeroPos(market)) ) {return}
+
+    let perppnl = (await this.perpService.getUnrealizedPnl(market.wallet.address)).toNumber()
+    
+    let perpmr = await this.perpService.getMarginRatio(market.wallet.address)
+    if (!perpmr) { 
+        console.log("FAIL: pmr null in maxMaxMarginRatioCheck")
+        throw new Error("ERROR: pmr null in maxMaxMarginRatioCheck")
+    }
+
+    let idxPrice = (await this.perpService.getIndexPrice(market.baseToken)).toNumber()
+    let csz = (await this.perpService.getTotalPositionSize(market.wallet.address, market.baseToken)).toNumber()
+
+if (config.TRACE_FLAG) { console.log("TRACE: " + market.name + " perpmr: " + perpmr.toFixed(4) + " perppnl: " + perppnl.toFixed(4))}
+// if perppnl negative for sure we are not scaling
+if (perppnl < 0) { return }
+let freec = (await this.perpService.getFreeCollateral(market.wallet.address)).toNumber()
+const HAIRCUT = 0.975
+const MAX_LEVERAGE = 10  // will be haircut
+const MIN_FREEC = 1   // adjust considering gas cost; e.g gas is lt 20% of fully leveraged freec
+if (freec < MIN_FREEC ) { 
+    console.log("WARN: freec: " + market.name + ": " + freec.toFixed() + " too low in maxMaxMarginRatioCheck")
+    return 
+}
+// simpler calculation than regular rescale back to reset here we maxout with a haircut
+let usdAmount = HAIRCUT*freec*MAX_LEVERAGE
+/*
+let nxtsz = (market.startCollateral + perppnl)/(market.resetMargin*idxPrice)
+let incsz = nxtsz - Math.abs(csz)
+let resetamnt = Math.abs(incsz)*idxPrice
+// usdAmount will be the minimum of the reset amount and the free collateral
+let usdAmount = Math.min(resetamnt, freec)*HAIRCUT
+*/
+if (perpmr.toNumber() > market.maxMarginRatio) {
+    try { 
+        await this.open(market, usdAmount) 
+        console.log(Date.now() + " INFO: scale " + market.name + " mr: " + perpmr.toFixed(4) +  
+                                  " usdamnt: " + usdAmount.toFixed() + " freec: " + freec.toFixed())
+    } catch { console.log(Date.now() + ", maxMargin Failed Open,  " +  market.name )}
+}
+
+
+}
+async maxMaxMarginRatioCheck(market: Market) {
     if ( !(await this.isNonZeroPos(market)) ) {return}
     // compute current mr = [startcollat + pn]/sz*ipx
 //W_END: hack    
@@ -1702,6 +1744,7 @@ if (currMR > market.maxMarginRatio) {
     }*/
 
 }
+
 
 // FIXME: use the new way >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 
@@ -1770,7 +1813,8 @@ async ensureSwapListenersOK(): Promise<void> {
     //this.checkOnPoolSubEmptyBucket() //<========================== poolSubChecknPullBucket
     this.mktDirectionChangeCheck()  // asses direction. WAKEUP deps on this
       // MMR. maximum margin RESET check
-    await this.maxMaxMarginRatioCheck(market)
+    await this.maxLeverageTriggerCheck(market) 
+    //await this.maxMaxMarginRatioCheck(market)
     await this.wakeUpCheck(market) //wakeup only favored leg if sided mkt else both
   }
   

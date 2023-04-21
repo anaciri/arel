@@ -1649,32 +1649,22 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
   }
 
 async maxLeverageTriggerCheck(market: Market) {
+    const HAIRCUT = 0.975
+    const MAX_LEVERAGE = 10  // will be haircut
+    const MIN_FREEC = 1   // adjust considering gas cost; e.g gas is lt 20% of fully leveraged freec
     if ( !(await this.isNonZeroPos(market)) ) {return}
 
     let perppnl = (await this.perpService.getUnrealizedPnl(market.wallet.address)).toNumber()
-    
     let perpmr = await this.perpService.getMarginRatio(market.wallet.address)
-    if (!perpmr) { 
-        console.log("FAIL: pmr null in maxMaxMarginRatioCheck")
-        throw new Error("ERROR: pmr null in maxMaxMarginRatioCheck")
-    }
+    if (!perpmr) {  throw new Error(market.name + " FAIL: pmr null in maxMaxMarginRatioCheck")}
 
-    let idxPrice = (await this.perpService.getIndexPrice(market.baseToken)).toNumber()
-    let csz = (await this.perpService.getTotalPositionSize(market.wallet.address, market.baseToken)).toNumber()
+    //let idxPrice = (await this.perpService.getIndexPrice(market.baseToken)).toNumber()
+    //let csz = (await this.perpService.getTotalPositionSize(market.wallet.address, market.baseToken)).toNumber()
 
-if (config.TRACE_FLAG) { console.log("TRACE: " + market.name + " perpmr: " + perpmr.toFixed(4) + " perppnl: " + perppnl.toFixed(4))}
-// if perppnl negative for sure we are not scaling
-if (perppnl < 0) { return }
-let freec = (await this.perpService.getFreeCollateral(market.wallet.address)).toNumber()
-const HAIRCUT = 0.975
-const MAX_LEVERAGE = 10  // will be haircut
-const MIN_FREEC = 1   // adjust considering gas cost; e.g gas is lt 20% of fully leveraged freec
-if (freec < MIN_FREEC ) { 
-    console.log("WARN: freec: " + market.name + ": " + freec.toFixed() + " too low in maxMaxMarginRatioCheck")
-    return 
-}
-// simpler calculation than regular rescale back to reset here we maxout with a haircut
-let usdAmount = HAIRCUT*freec*MAX_LEVERAGE
+// if perppnl negative or too small freec for sure we are not scaling
+    if (perppnl < 0 ) { return }
+    let freec = (await this.perpService.getFreeCollateral(market.wallet.address)).toNumber()
+    if (freec < config.TP_MIN_FREE_COLLATERAL ) { return }
 /*
 let nxtsz = (market.startCollateral + perppnl)/(market.resetMargin*idxPrice)
 let incsz = nxtsz - Math.abs(csz)
@@ -1682,16 +1672,19 @@ let resetamnt = Math.abs(incsz)*idxPrice
 // usdAmount will be the minimum of the reset amount and the free collateral
 let usdAmount = Math.min(resetamnt, freec)*HAIRCUT
 */
+// simpler calculation than regular rescale back to reset here we maxout with a haircut
+let usdAmount = freec*config.TP_SCALE_LEVERAGE
 if (perpmr.toNumber() > market.maxMarginRatio) {
     try { 
         await this.open(market, usdAmount) 
         console.log(Date.now() + " INFO: scale " + market.name + " mr: " + perpmr.toFixed(4) +  
-                                  " usdamnt: " + usdAmount.toFixed() + " freec: " + freec.toFixed())
+                                  " usdamnt: " + usdAmount.toFixed(4) + " freec: " + freec.toFixed(4))
     } catch { console.log(Date.now() + ", maxMargin Failed Open,  " +  market.name )}
 }
-
-
+if (config.TRACE_FLAG) { console.log("TRACE: " + market.name + " perpmr: " + perpmr.toFixed(4) + 
+ " perppnl: " + perppnl.toFixed(4) + "freec: " + freec.toFixed(4)) }
 }
+
 async maxMaxMarginRatioCheck(market: Market) {
     if ( !(await this.isNonZeroPos(market)) ) {return}
     // compute current mr = [startcollat + pn]/sz*ipx

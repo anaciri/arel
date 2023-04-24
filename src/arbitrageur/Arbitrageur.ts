@@ -1105,7 +1105,8 @@ if (config.TRACE_FLAG) { console.log(Date.now() + " TRACE: mktDir: " + btcDelta.
     }
 }
 async computeKellyFactors() {
-
+    // for the very first time you will need to have a minimum leverage otherwise factor will be zero
+    const START_MIN_LEVERAGE = 0.2 //so that you start at 0.2*10 = 2x leverage
     let positivePositions = [];
     let negativePositions = [];
     
@@ -1117,8 +1118,8 @@ async computeKellyFactors() {
     }
     
     const totalEnabledMarkets = this.enabledMarkets.length;
-    const lkf = positivePositions.length / totalEnabledMarkets;
-    const skf = negativePositions.length / totalEnabledMarkets;
+    const lkf = Math.max(START_MIN_LEVERAGE,  positivePositions.length / totalEnabledMarkets)
+    const skf = Math.max(START_MIN_LEVERAGE, negativePositions.length / totalEnabledMarkets)
     
     if(config.TRACE_FLAG) { console.log("TRACE: longs: " + positivePositions + " shors: " + negativePositions) }
     console.log("MON: long/short kelly: " + lkf.toFixed(2) + ", " + skf.toFixed(2)) 
@@ -1129,7 +1130,7 @@ async computeKellyFactors() {
 // wakeUpCheck
 //-----
 async wakeUpCheck(mkt: Market): Promise<boolean> { 
-    const MAX_LEVERAGE  = 9.98
+    const MAX_LEVERAGE  = 9.96
     // return if no new data or no new data i.e older than 1 cyle
     let ts = this.poolState[mkt.tkr].cycleTickDeltaTs
     let now = Date.now()
@@ -1154,7 +1155,12 @@ if (config.TRACE_FLAG) { console.log(now + " TRACE: wakeUpCheck: " + mkt.tkr + "
                 // compute factors
                 let lkf = (await this.computeKellyFactors()).longKellyFactor
                 let sz = mkt.startCollateral*lkf*MAX_LEVERAGE 
-                if (!lkf) { throw (Date.now() + " ERROR: kellyfactor zero in nonzero pos: " + mkt.name + " lfk: " + lkf) }
+                if (!lkf) { 
+                    //throw and error and log. error
+                    let err = " FAIL: kellyfactor zero in nonzero pos: " + mkt.name + " lfk: " + lkf
+                    console.error(err)
+                    throw (Date.now() + err )
+                 }
             
                 try { await this.open(mkt,sz) }
                 catch(err) { console.error(Date.now() + mkt.tkr +  " OPEN FAILED in wakeUpCheck") }
@@ -1170,7 +1176,12 @@ if (config.TRACE_FLAG) { console.log(now + " TRACE: wakeUpCheck: " + mkt.tkr + "
         if(!pos) { 
             // compute factors
             let skf = (await this.computeKellyFactors()).shortKellyFactor
-            if (!skf) { throw (Date.now() + " ERROR: kellyfactor zero in nonzero pos: " + mkt.name + " skf: " + skf) }
+            if (!skf) {
+                 //throw and error and log. error
+                 let err =  " FAIL: kellyfactor zero in nonzero pos: " + mkt.name + " skf: " + skf
+                 console.error(err)
+                 throw (Date.now() + err )
+                }
              
             let sz = mkt.startCollateral*skf*MAX_LEVERAGE 
        

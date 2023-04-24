@@ -260,8 +260,7 @@ export class Arbitrageur extends BotService {
     private evtBuffer: { [key: string]: CircularBuffer } = {};
     //convinienc list of enbled market
     enabledMarkets: string[] =[]
-    
-
+    enabledLegs: string[] =[]
     
 
     async setup(): Promise<void> {
@@ -1105,11 +1104,87 @@ if (config.TRACE_FLAG) { console.log(Date.now() + " TRACE: mktDir: " + btcDelta.
         console.log(Date.now() + " MKT: " + this.holosSide + ":" + btcDelta.toFixed() + ", " + ethDelta.toFixed() + ", " + bnbDelta.toFixed())
     }
 }
+async computeKellyFactors() {
 
+    let positivePositions = [];
+    let negativePositions = [];
+    
+    for (const tkr of this.enabledLegs) {
+      const pos = (await this.perpService.getTotalAbsPositionValue(this.marketMap[tkr].wallet.address)).toNumber()
+
+      if (pos > 0) { positivePositions.push(pos) }
+      else if (pos < 0) { negativePositions.push(pos);}
+    }
+    
+    const totalEnabledMarkets = this.enabledMarkets.length;
+    const lkf = positivePositions.length / totalEnabledMarkets;
+    const skf = negativePositions.length / totalEnabledMarkets;
+    
+    if(config.TRACE_FLAG) { console.log("TRACE: longs: " + positivePositions + " shors: " + negativePositions) }
+    console.log("MON: long/short kelly: " + lkf.toFixed(2) + ", " + skf.toFixed(2)) 
+
+    return {longKellyFactor: lkf, shortKellyFactor: skf};
+}
 //----------------------------------
 // wakeUpCheck
 //-----
 async wakeUpCheck(mkt: Market): Promise<boolean> { 
+    const MAX_LEVERAGE  = 9.98
+    // return if no new data or no new data i.e older than 1 cyle
+    let ts = this.poolState[mkt.tkr].cycleTickDeltaTs
+    let now = Date.now()
+    let cutoff = now - config.PRICE_CHECK_INTERVAL_SEC*1000
+if (config.TRACE_FLAG) { console.log(now + " TRACE: wakeUpCheck: " + mkt.tkr + " ctickDlt: " + ts + " cutoff: " + cutoff ) }
+    if (this.poolState[mkt.tkr].cycleTickDeltaTs < cutoff ) { return false }
+    
+    let tickDelta = this.poolState[mkt.tkr].cycleTickDelta
+
+    // if absolute tickDelta too small dont bother
+if (config.TRACE_FLAG) { console.log(now + " TRACE: wakeUpCheck: " + mkt.tkr + " tkdlt: " + tickDelta.toFixed()) }
+
+    if (Math.abs(tickDelta) < mkt.longEntryTickDelta) { return false }
+    
+  // wake up long/sThort on tick inc
+    //let dir = this.holosSide
+    if ( (mkt.side == Side.LONG) && (tickDelta > mkt.longEntryTickDelta) ) {
+        let pos = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
+        
+        // check if position already open first
+        if(!pos) { 
+                // compute factors
+                let lkf = (await this.computeKellyFactors()).longKellyFactor
+                let sz = mkt.startCollateral*lkf*MAX_LEVERAGE 
+                if (!lkf) { throw (Date.now() + " ERROR: kellyfactor zero in nonzero pos: " + mkt.name + " lfk: " + lkf) }
+            
+                try { await this.open(mkt,sz) }
+                catch(err) { console.error(Date.now() + mkt.tkr +  " OPEN FAILED in wakeUpCheck") }
+
+                let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
+                console.log(tstmp + " INFO: WAKEUP:" + mkt.name + " Dt:" + tickDelta.toFixed(4) + " kelly: " + lkf)
+                return true
+        }
+    }
+    else if ( (mkt.side == Side.SHORT) && (tickDelta < 0) && (Math.abs(tickDelta) > mkt.shortEntryTickDelta) ) {
+        // ensure not open aleady
+        let pos = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
+        if(!pos) { 
+            // compute factors
+            let skf = (await this.computeKellyFactors()).shortKellyFactor
+            if (!skf) { throw (Date.now() + " ERROR: kellyfactor zero in nonzero pos: " + mkt.name + " skf: " + skf) }
+             
+            let sz = mkt.startCollateral*skf*MAX_LEVERAGE 
+       
+            try { await this.open(mkt,sz) }
+            catch(err) { console.error(Date.now() + mkt.tkr +  " OPEN FAILED in wakeUpCheck") }
+
+            let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
+            console.log(tstmp + " INFO: WAKEUP:" + mkt.name + " Dt:" + tickDelta.toFixed(4) + " kelly: " + skf)
+            return true
+        }
+    }
+    return false
+}
+async BKPwakeUpCheck(mkt: Market): Promise<boolean> { 
     // return if no new data or no new data i.e older than 1 cyle
     let ts = this.poolState[mkt.tkr].cycleTickDeltaTs
     let now = Date.now()
@@ -1160,56 +1235,7 @@ if (config.TRACE_FLAG) { console.log(now + " TRACE: wakeUpCheck: " + mkt.tkr + "
     return false
 }
 
-async BKPwakeUpCheck(mkt: Market): Promise<boolean> { 
-    // return if no new data or no new data i.e older than 1 cyle
-    let len = this.poolState[mkt.tkr].bucket.length
-    if (len == 0) { return false }
-    let cutoff = Date.now() - config.PRICE_CHECK_INTERVAL_SEC*1000
-    if (this.poolState[mkt.tkr].bucket[len-1].timestamp < cutoff ) { return false }
-    
-    // new data in bucket. NAIVE: get the dlta btwin last and first
-    let tickDelta = this.poolState[mkt.tkr].bucket[len-1].tick - this.poolState[mkt.tkr].bucket[0].tick
 
-    // if absolute tickDelta too small dont bother
-    if (Math.abs(tickDelta) < mkt.longEntryTickDelta) { return false }
-    
-  // wake up long/short on tick inc
-    let dir = this.holosSide
-    if ( (mkt.side == Side.LONG) && (tickDelta > mkt.longEntryTickDelta) && (dir == Direction.TORO) ) {
-        let pos = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
-        let sz = mkt.startCollateral / mkt.resetMargin
-        try { 
-            if(!pos) { 
-                await this.open(mkt,sz)
-                let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
-                console.log(tstmp + " INFO: WAKEUP:" + mkt.name + " Dt:" + tickDelta)
-                return true
-             } 
-        }
-        catch(err) { console.error(Date.now() + mkt.tkr +  " OPEN FAILED in wakeUpCheck") }
-    }
-    else if ( (mkt.side == Side.SHORT) && (tickDelta < 0)
-                                       && (Math.abs(tickDelta) > mkt.shortEntryTickDelta) 
-                                       && (dir == Direction.BEAR)) {
-        let pos = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
-        let sz = mkt.startCollateral / mkt.resetMargin
-        try {
-            if(!pos) {
-                await this.open(mkt,sz)
-                let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
-                console.log(tstmp + " INFO: WAKEUP:" + mkt.name + " Dt:" + tickDelta)
-                return true
-            }
-        }
-        catch(err) { console.error(Date.now() + mkt.tkr +  " OPEN FAILED in wakeUpCheck") }
-    }
-
-    if (tickDelta) {
-        console.log(this.holosSide + ": tickDelta:" + mkt.name + ": " + tickDelta)
-    }
-
-    return false
-}
 
 //----------------------------------
 // trigger: roll ended
@@ -1804,7 +1830,7 @@ async ensureSwapListenersOK(): Promise<void> {
     }
     //updat pool data
     //this.checkOnPoolSubEmptyBucket() //<========================== poolSubChecknPullBucket
-    this.mktDirectionChangeCheck()  // asses direction. WAKEUP deps on this
+//-------this.mktDirectionChangeCheck()  // asses direction. WAKEUP deps on this
       // MMR. maximum margin RESET check
     await this.maxLeverageTriggerCheck(market) 
     //await this.maxMaxMarginRatioCheck(market)

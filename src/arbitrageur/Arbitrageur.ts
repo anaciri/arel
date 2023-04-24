@@ -1153,20 +1153,22 @@ if (config.TRACE_FLAG) { console.log(now + " TRACE: wakeUpCheck: " + mkt.tkr + "
         // check if position already open first
         if(!pos) { 
                 // compute factors
-                let lkf = (await this.computeKellyFactors()).longKellyFactor
+                //let lkf = (await this.computeKellyFactors()).longKellyFactor
+                let sz = mkt.startCollateral / mkt.resetMargin
+                /*
                 let sz = mkt.startCollateral*lkf*MAX_LEVERAGE 
                 if (!lkf) { 
                     //throw and error and log. error
                     let err = " FAIL: kellyfactor zero in nonzero pos: " + mkt.name + " lfk: " + lkf
                     console.error(err)
                     throw (Date.now() + err )
-                 }
+                 }*/
             
                 try { await this.open(mkt,sz) }
                 catch(err) { console.error(Date.now() + mkt.tkr +  " OPEN FAILED in wakeUpCheck") }
 
                 let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
-                console.log(tstmp + " INFO: WAKEUP:" + mkt.name + " Dt:" + tickDelta.toFixed(4) + " kelly: " + lkf)
+                console.log(tstmp + " INFO: WAKEUP:" + mkt.name + " Dt:" + tickDelta.toFixed(4))
                 return true
         }
     }
@@ -1175,6 +1177,7 @@ if (config.TRACE_FLAG) { console.log(now + " TRACE: wakeUpCheck: " + mkt.tkr + "
         let pos = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
         if(!pos) { 
             // compute factors
+            /*
             let skf = (await this.computeKellyFactors()).shortKellyFactor
             if (!skf) {
                  //throw and error and log. error
@@ -1182,14 +1185,15 @@ if (config.TRACE_FLAG) { console.log(now + " TRACE: wakeUpCheck: " + mkt.tkr + "
                  console.error(err)
                  throw (Date.now() + err )
                 }
-             
-            let sz = mkt.startCollateral*skf*MAX_LEVERAGE 
+             */
+            //let sz = mkt.startCollateral*skf*MAX_LEVERAGE 
+            let sz = mkt.startCollateral / mkt.resetMargin
        
             try { await this.open(mkt,sz) }
             catch(err) { console.error(Date.now() + mkt.tkr +  " OPEN FAILED in wakeUpCheck") }
 
             let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
-            console.log(tstmp + " INFO: WAKEUP:" + mkt.name + " Dt:" + tickDelta.toFixed(4) + " kelly: " + skf)
+            console.log(tstmp + " INFO: WAKEUP:" + mkt.name + " Dt:" + tickDelta.toFixed(4) )
             return true
         }
     }
@@ -1686,7 +1690,7 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
   }
 
 async maxLeverageTriggerCheck(market: Market) {
-    const HAIRCUT = 0.975
+    //const HAIRCUT = 0.975
     const MAX_LEVERAGE = 10  // will be haircut
     const MIN_FREEC = 1   // adjust considering gas cost; e.g gas is lt 20% of fully leveraged freec
     if ( !(await this.isNonZeroPos(market)) ) {return}
@@ -1709,8 +1713,12 @@ let resetamnt = Math.abs(incsz)*idxPrice
 // usdAmount will be the minimum of the reset amount and the free collateral
 let usdAmount = Math.min(resetamnt, freec)*HAIRCUT
 */
-// simpler calculation than regular rescale back to reset here we maxout with a haircut
-let usdAmount = freec*config.TP_SCALE_LEVERAGE
+// leverage level is determined by kelly
+let kftors = await this.computeKellyFactors()
+let kf = market.side == "long" ? kftors.longKellyFactor : kftors.shortKellyFactor
+// note there is a floor on scale computed i.e 0.2
+let scale = kf*MAX_LEVERAGE
+let usdAmount = freec*scale
 if (perpmr.toNumber() > market.maxMarginRatio) {
     try { 
         await this.open(market, usdAmount) 

@@ -9,7 +9,7 @@ import { UniswapV3Pool } from "@perp/common/build/types/ethers-uniswap"
 import BigNumber from 'bignumber.js';
 import Big from "big.js"
 import { ethers } from "ethers"
-import { max, padEnd, update } from "lodash"
+import { max, padEnd, update, upperFirst } from "lodash"
 import { decode } from "punycode"
 import { Service } from "typedi"
 import config from "../configs/config.json"
@@ -531,7 +531,8 @@ if (config.TRACE_FLAG) { console.log(" TRACE: evt: " + tkr  + " " + timestamp + 
                 twin: marketName.endsWith("SHORT") ? marketName.split("_")[0] : marketName + "_SHORT"
             }
             // populate convinience property
-            this.enabledMarkets.push( marketName.split('_')[0] )
+            this.enabledLegs.push( marketName)
+            this.enabledMarkets.push( marketName.split('_')[0])
         }
         // remove duplicates from enabledMarkets (i.e vSOL/and vSOL_SHORT)
         this.enabledMarkets = [...new Set(this.enabledMarkets)];
@@ -1104,27 +1105,46 @@ if (config.TRACE_FLAG) { console.log(Date.now() + " TRACE: mktDir: " + btcDelta.
         console.log(Date.now() + " MKT: " + this.holosSide + ":" + btcDelta.toFixed() + ", " + ethDelta.toFixed() + ", " + bnbDelta.toFixed())
     }
 }
-async computeKellyFactors() {
+// returns a value from 0 to max laverage
+// amygadala shortcut if side count is higher than qrom then automatic 10x in favored side and MIN leverage in other
+// if both sides qrom i.e high dispersion then 10x in both and rely on maxloss/solidaritkll to exit
+
+async computeKellyLeverage() {
+    const MAX_LEVERAGE = 10  // will be haircut
     // for the very first time you will need to have a minimum leverage otherwise factor will be zero
-    const START_MIN_LEVERAGE = 0.2 //so that you start at 0.2*10 = 2x leverage
+    //const START_MIN_LEVERAGE = 0.2 //so that you start at 0.2*10 = 2x leverage
+    let uretLongs = [];
+    let uretShorts = [];
     let positivePositions = [];
     let negativePositions = [];
+
+    // NOTE: disregarding if the open position has negative uret but we are using uret for shortcut to 10x
     
     for (const tkr of this.enabledLegs) {
-      const pos = (await this.perpService.getTotalAbsPositionValue(this.marketMap[tkr].wallet.address)).toNumber()
-
-      if (pos > 0) { positivePositions.push(pos) }
-      else if (pos < 0) { negativePositions.push(pos);}
-    }
-    
+        const pos = (await this.perpService.getTotalPositionSize(
+            this.marketMap[tkr].wallet.address,this.marketMap[tkr].baseToken )).toNumber()
+        if (pos > 0) { //longs
+            positivePositions.push(pos) 
+            uretLongs.push( this.marketMap[tkr].uret )
+        }
+        else if (pos < 0) {  //shorts
+            negativePositions.push(pos)
+            uretShorts.push( this.marketMap[tkr].uret )
+        }
+    } 
+    // compute kelly factors based on conviction
     const totalEnabledMarkets = this.enabledMarkets.length;
-    const lkf = Math.max(START_MIN_LEVERAGE,  positivePositions.length / totalEnabledMarkets)
-    const skf = Math.max(START_MIN_LEVERAGE, negativePositions.length / totalEnabledMarkets)
+    let lkf = positivePositions.length / totalEnabledMarkets
+    let skf = negativePositions.length / totalEnabledMarkets
     
     if(config.TRACE_FLAG) { console.log("TRACE: longs: " + positivePositions + " shors: " + negativePositions) }
     console.log("MON: long/short kelly: " + lkf.toFixed(2) + ", " + skf.toFixed(2)) 
 
-    return {longKellyFactor: lkf, shortKellyFactor: skf};
+    // overwrite if uretLongs/uretShorts count is geq than TP_QRM_MAX_LEVERAGE e.g if 3 (in a total set of 5) go strait to 1
+    if (uretLongs.filter((uret) => uret > config.TP_QRM_MIN_RET).length >= config.TP_QRM_FOR_MAX_LEVERAGE) { lkf = MAX_LEVERAGE }
+    if (uretShorts.filter((uret) => uret > config.TP_QRM_MIN_RET).length >= config.TP_QRM_FOR_MAX_LEVERAGE) { skf = MAX_LEVERAGE }
+
+    return {longKellyLvrj: MAX_LEVERAGE*lkf, shortKellyLvrj: MAX_LEVERAGE*skf};
 }
 //----------------------------------
 // wakeUpCheck
@@ -1619,20 +1639,20 @@ async maxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
         let collatbasis = mkt.idxBasisCollateral
         let wcollatbasis = mkt.wBasisCollateral
         // initially print both, plus good to check on divergencd
-        const wcol = await this.getPnlAdjCollatValue(mkt)
+ //FIXME: getPnlAdjCollatValue        
+        //const wcol = await this.getPnlAdjCollatValue(mkt)
         // getAccountValue is based on index price
         const icol = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
     
         //peak tick updated by eventInput procesor. they should match
         if (icol > mkt.idxBasisCollateral) { mkt.idxBasisCollateral = icol }
-        if (wcol > mkt.wBasisCollateral) { mkt.wBasisCollateral = wcol }
+        //if (wcol > mkt.wBasisCollateral) { mkt.wBasisCollateral = wcol }
 
          let uret = 1 + (icol - collatbasis)/collatbasis
-         let wret = 1 + (wcol - wcollatbasis)/wcollatbasis
+         //let wret = 1 + (wcol - wcollatbasis)/wcollatbasis
+         mkt.uret = uret
         if (uret < config.TP_MAX_ROLL_LOSS ) { check = true  }// mark check positive 
-
-          console.log(mkt.name + " ibasis:" + mkt.idxBasisCollateral.toFixed(2) + "idx uret: " + uret.toFixed(4) +
-          " wret:" + wret.toFixed(4) + " wbasis:" + mkt.wBasisCollateral.toFixed(2));
+          console.log(mkt.name + " ibasis:" + mkt.idxBasisCollateral.toFixed(2) + "idx uret: " + uret.toFixed(4))
     } 
     return check 
   }
@@ -1690,9 +1710,7 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
   }
 
 async maxLeverageTriggerCheck(market: Market) {
-    //const HAIRCUT = 0.975
-    const MAX_LEVERAGE = 10  // will be haircut
-    const MIN_FREEC = 1   // adjust considering gas cost; e.g gas is lt 20% of fully leveraged freec
+
     if ( !(await this.isNonZeroPos(market)) ) {return}
 
     let perppnl = (await this.perpService.getUnrealizedPnl(market.wallet.address)).toNumber()
@@ -1713,12 +1731,13 @@ let resetamnt = Math.abs(incsz)*idxPrice
 // usdAmount will be the minimum of the reset amount and the free collateral
 let usdAmount = Math.min(resetamnt, freec)*HAIRCUT
 */
-// leverage level is determined by kelly
-let kftors = await this.computeKellyFactors()
-let kf = market.side == "long" ? kftors.longKellyFactor : kftors.shortKellyFactor
+// leverage level is determined by kelly. computeKelly return factor of max leverage
+let kftors = await this.computeKellyLeverage()
+// returns a number between 0 and 10*TP_EXECUTION_HAIRCUT
+let klvrj = market.side == "long" ? kftors.longKellyLvrj : kftors.shortKellyLvrj
 // note there is a floor on scale computed i.e 0.2
-let scale = kf*MAX_LEVERAGE
-let usdAmount = freec*scale
+let scale = Math.max(klvrj, 1/market.resetMargin) //computeKellyLeverage can return a zero so we put a floor
+let usdAmount = freec*scale*config.TP_EXECUTION_HAIRCUT
 if (perpmr.toNumber() > market.maxMarginRatio) {
     try { 
         await this.open(market, usdAmount) 

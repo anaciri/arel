@@ -24,6 +24,7 @@ import { Mutex } from "async-mutex";
 import { checkServerIdentity } from "tls"
 import { dbgnow } from "../dbg/crocDebug"
 import { parse } from 'csv-parse';
+import { getHeapSnapshot } from "v8"
 
 const jsonfile = require('jsonfile');
 
@@ -1105,6 +1106,22 @@ if (config.TRACE_FLAG) { console.log(Date.now() + " TRACE: mktDir: " + btcDelta.
         console.log(Date.now() + " MKT: " + this.holosSide + ":" + btcDelta.toFixed() + ", " + ethDelta.toFixed() + ", " + bnbDelta.toFixed())
     }
 }
+// what legs have not been killed
+async getOpenLegUrets() {
+    const MAX_LEVERAGE = 10  // will be haircut
+    // for the very first time you will need to have a minimum leverage otherwise factor will be zero
+    //const START_MIN_LEVERAGE = 0.2 //so that you start at 0.2*10 = 2x leverage
+    let uretlong = [];
+    let uretshort = [];
+    // NOTE: disregarding if the open position has negative uret but we are using uret for shortcut to 10x
+    for (const tkr of this.enabledLegs) {
+        const pos = (await this.perpService.getTotalPositionSize(
+            this.marketMap[tkr].wallet.address,this.marketMap[tkr].baseToken )).toNumber()
+        if      (pos > 0) { uretlong.push( this.marketMap[tkr].uret ) }         // open longs returns
+        else if (pos < 0) { uretshort.push( this.marketMap[tkr].uret ) }   // open shorts returns
+    } 
+    return { uretLongs: uretlong, uretShorts: uretshort }
+}
 // returns a value from 0 to max laverage
 // amygadala shortcut if side count is higher than qrom then automatic 10x in favored side and MIN leverage in other
 // if both sides qrom i.e high dispersion then 10x in both and rely on maxloss/solidaritkll to exit
@@ -1709,7 +1726,49 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
     return check 
   }
 
-async maxLeverageTriggerCheck(market: Market) {
+  // chain scale reaction i.e scale causing additional scaleing
+async ratchedMaxLeverageTriggerCheck(market: Market) {
+const MAX_LEVERAGE = 10  //haircust will be applied
+    if ( !(await this.isNonZeroPos(market)) ) {return}
+
+    let perppnl = (await this.perpService.getUnrealizedPnl(market.wallet.address)).toNumber()
+    let perpmr = await this.perpService.getMarginRatio(market.wallet.address)
+    if (!perpmr) {  throw new Error(market.name + " FAIL: pmr null in maxMaxMarginRatioCheck")}
+
+    if (config.TRACE_FLAG) { console.log("TRACE: " + market.name + " perpmr: " + perpmr.toFixed(4) +  " perppnl: " + perppnl.toFixed(4)) }
+// if perppnl negative or too small freec for sure we are not scaling
+
+    if (perppnl < 0 ) { return }
+
+    let freec = (await this.perpService.getFreeCollateral(market.wallet.address)).toNumber()
+    if (freec < config.TP_MIN_FREE_COLLATERAL ) { return }
+
+    // check if crossed threshold. two tracks regular track LEV_INC or fastrack to MAX_LEVERAGE
+    if ( perpmr.toNumber() > market.maxMarginRatio ) {
+        // Get the new scale: first check if normal INC or can fast track to MAX_LEVERAGE
+        let scale = 1/market.basisMargin
+        let urets = market.side == Side.LONG ? (await this.getOpenLegUrets()).uretLongs
+                                         : (await this.getOpenLegUrets()).uretShorts
+
+        // do i have qrom of already same-side-opened profitable positions to fastract?
+        if (urets.filter((uret) => uret > config.TP_QRM_MIN_RET).length >= config.TP_QRM_FOR_MAX_LEVERAGE) { 
+            scale = MAX_LEVERAGE }
+        else { //snap, just the step increment
+            scale = Math.min( 1/(market.basisMargin + config.TP_MARGIN_STEP_INC), MAX_LEVERAGE)
+        }
+        // ok. scale settled ready to open
+        let usdAmount = freec*scale*config.TP_EXECUTION_HAIRCUT
+        try { 
+            await this.open(market, usdAmount) 
+            console.log(Date.now() + " INFO: SCALE " + market.name + " mr: " + perpmr.toFixed(4) +  
+                                  " usdamnt: " + usdAmount.toFixed(4) + " freec: " + freec.toFixed(4)) 
+        } catch { console.log(Date.now() + ", maxMargin Failed Open,  " +  market.name ) }
+        // update basis margin for the leverage chain reaction
+        market.basisMargin = 1/scale
+    }
+}
+
+  async kellyMaxLeverageTriggerCheck(market: Market) {
 
     if ( !(await this.isNonZeroPos(market)) ) {return}
 
@@ -1719,7 +1778,8 @@ async maxLeverageTriggerCheck(market: Market) {
 
     //let idxPrice = (await this.perpService.getIndexPrice(market.baseToken)).toNumber()
     //let csz = (await this.perpService.getTotalPositionSize(market.wallet.address, market.baseToken)).toNumber()
-
+    if (config.TRACE_FLAG) { 
+        console.log("TRACE: " + market.name + " perpmr: " + perpmr.toFixed(4) +  " perppnl: " + perppnl.toFixed(4)) }
 // if perppnl negative or too small freec for sure we are not scaling
     if (perppnl < 0 ) { return }
     let freec = (await this.perpService.getFreeCollateral(market.wallet.address)).toNumber()
@@ -1738,15 +1798,13 @@ let klvrj = market.side == "long" ? kftors.longKellyLvrj : kftors.shortKellyLvrj
 // note there is a floor on scale computed i.e 0.2
 let scale = Math.max(klvrj, 1/market.resetMargin) //computeKellyLeverage can return a zero so we put a floor
 let usdAmount = freec*scale*config.TP_EXECUTION_HAIRCUT
-if (perpmr.toNumber() > market.maxMarginRatio) {
-    try { 
+    if (perpmr.toNumber() > market.maxMarginRatio) {
+        try { 
         await this.open(market, usdAmount) 
         console.log(Date.now() + " INFO: scale " + market.name + " mr: " + perpmr.toFixed(4) +  
                                   " usdamnt: " + usdAmount.toFixed(4) + " freec: " + freec.toFixed(4))
-    } catch { console.log(Date.now() + ", maxMargin Failed Open,  " +  market.name )}
-}
-if (config.TRACE_FLAG) { console.log("TRACE: " + market.name + " perpmr: " + perpmr.toFixed(4) + 
- " perppnl: " + perppnl.toFixed(4) + "freec: " + freec.toFixed(4)) }
+        } catch { console.log(Date.now() + ", maxMargin Failed Open,  " +  market.name )}
+    }
 }
 
 async maxMaxMarginRatioCheck(market: Market) {
@@ -1858,24 +1916,22 @@ async ensureSwapListenersOK(): Promise<void> {
     //await this.ensureSwapListenersOK()
     // new cycle. update cycle deltas based on what events have been received since last cycle
     this.processEventInputs()
-
     // now that cycle events delta. first things first.check for TP_MAX_LOSS
     if ( await this.maxLossCheckAndStateUpd(market) ) {   // have a positive => close took place. check for qrom crossing
         await this.putMktToSleep(market)
-
         // >>>>>>>>>>>>>> UNCOMMENT THIS TO ENABLE SOLIDARITY KILL
         //await this.solidarityKill(market.side)  WARN: diabling until fix return
     }
-    //updat pool data
     //this.checkOnPoolSubEmptyBucket() //<========================== poolSubChecknPullBucket
 //-------this.mktDirectionChangeCheck()  // asses direction. WAKEUP deps on this
       // MMR. maximum margin RESET check
-    await this.maxLeverageTriggerCheck(market) 
+    await this.ratchedMaxLeverageTriggerCheck(market) 
     //await this.maxMaxMarginRatioCheck(market)
     await this.wakeUpCheck(market) //wakeup only favored leg if sided mkt else both
   }
-  
-    // check if there is a direction change into a non-zebra beast
+  //---------------- end of routine  -----------------------------------------------------
+
+    //DEPRECATED-----------------
     async holosDirectionChangeCheck(): Promise<boolean> {
         // which pools have moved at least say 10 ticks to ignore noise
         const minMoveList = Object.values(this.poolState).filter(

@@ -269,29 +269,26 @@ export class Arbitrageur extends BotService {
        // Print the names and values of all the variables that match the pattern 'v[A-Z]{3,}'
         const pattern = /^v[A-Z]{3,}/  
         let vk = Object.entries(process.env).filter(([k])=> pattern.test(k))
-
-        for (const [key, value] of vk) {
-            this.pkMap.set(key, value!);
-          }
+        for (const [key, value] of vk) { this.pkMap.set(key, value!) }
           
         // initilize pkMap
-          let wlts = transformValues(this.pkMap, v => this.ethService.privateKeyToWallet(v))
+        let wlts = transformValues(this.pkMap, v => this.ethService.privateKeyToWallet(v))
         // needed by BotService.retrySendTx
         await this.createNonceMutex([...wlts.values()])
-        // initialize data structures needed for evt buffering and processing i.e evtBuffer and PoolState
-        // 1. get enabled markets from config
         await this.createMarketMap()
         // 2. allocate memory for evtBuffers for enabled tickers
         this.initDataStructs()
         this.createPoolStateMap() //<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<--- rename to initDataStruc
-
-        //this.createPoolDataMap()
-
         this.evtSubProviderEndpoints = process.env.EVENT_SUB_ENDPOINTS!.split(",");
         if (!this.evtSubProviderEndpoints) { throw new Error("NO Subscription Providers in .env")}
-        else { 
-            this.evtSubProvider = new ethers.providers.JsonRpcProvider(this.evtSubProviderEndpoints[this.evtSubEndpointsIndex]);
-        }
+        else {
+            const providerEndpoint = this.evtSubProviderEndpoints[this.evtSubEndpointsIndex];
+
+            this.evtSubProvider = providerEndpoint.startsWith("wss:")
+            ? new ethers.providers.WebSocketProvider(providerEndpoint)
+            : new ethers.providers.JsonRpcProvider(providerEndpoint);
+        }   
+        //else { this.evtSubProvider = new ethers.providers.JsonRpcProvider(this.evtSubProviderEndpoints[this.evtSubEndpointsIndex]);}
         await this.setupPoolListeners()
         /*/ move this to checker
         const proxies = ["vBTC", "vETH", "vBNB"]
@@ -432,9 +429,6 @@ export class Arbitrageur extends BotService {
 
         for (const tkr of this.enabledMarkets) {
             const unipool = new ethers.Contract( this.poolState[tkr].poolAddr, IUniswapV3PoolABI.abi, this.evtSubProvider)
-
-            //let unipool = this.poolState[tkr].poolContract
-            
             // setup Swap event handler
             unipool.on('Swap', (sender: string, recipient: string, amount0: Big, amount1: Big, sqrtPriceX96: Big, 
                                 liquidity: Big, tick: number, event: ethers.Event) =>
@@ -773,7 +767,7 @@ processEventInputs(): void {
     
     // skip if no data since last cycle. first trace
 let cvals = cyclevals.map(obj => [obj.timestamp, obj.tick])
-if( config.TRACE_FLAG) { console.log(now + " TRACE: " + tkr + " ciclo: " + cvals) }
+//if( config.TRACE_FLAG) { console.log(now + " TRACE: " + tkr + " ciclo: " + cvals) }
     if (Object.keys(cyclevals).length == 0) { continue }
 
     // compute the weighted arithmetic mean for the last cycle seconds
@@ -1736,9 +1730,7 @@ const MAX_LEVERAGE = 10  //haircust will be applied
     if (!perpmr) {  throw new Error(market.name + " FAIL: pmr null in maxMaxMarginRatioCheck")}
 
     if (config.TRACE_FLAG) { console.log("TRACE: " + market.name + " perpmr: " + perpmr.toFixed(4) +  " perppnl: " + perppnl.toFixed(4)) }
-// if perppnl negative or too small freec for sure we are not scaling
-
-    if (perppnl < 0 ) { return }
+    //TODO.OPTIMIZE: if (perppnl < 0 ) { return }
 
     let freec = (await this.perpService.getFreeCollateral(market.wallet.address)).toNumber()
     if (freec < config.TP_MIN_FREE_COLLATERAL ) { return }

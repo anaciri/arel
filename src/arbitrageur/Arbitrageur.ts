@@ -298,7 +298,8 @@ export class Arbitrageur extends BotService {
        
         // reinstall swap event listeners
         this.setupPoolListeners()
-        console.warn( Date.now() + " MONITOR: EvtSubProv Rotation from " + fromEndpoint + " to: " + toEndpoint)
+        console.warn( Date.now() + " EVTMON: EvtSubProv Rotation from " + fromEndpoint + " to: " + toEndpoint)
+        console.log( Date.now() + " EVTMON: EvtSubProv Rotation from " + fromEndpoint + " to: " + toEndpoint)
       }
     
     setupEvtProviders() {

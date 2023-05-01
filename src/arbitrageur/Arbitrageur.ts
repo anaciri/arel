@@ -1802,8 +1802,7 @@ const MAX_LEVERAGE = 10  //haircust will be applied
         // Get the new scale: first check if normal INC or can fast track to MAX_LEVERAGE
         let scale = 1/market.basisMargin
         let urets = market.side == Side.LONG ? (await this.getOpenLegUrets()).uretLongs
-                                         : (await this.getOpenLegUrets()).uretShorts
-
+                                             : (await this.getOpenLegUrets()).uretShorts
         // do i have qrom of already same-side-opened profitable positions to fastract?
         if (urets.filter((uret) => uret > config.TP_QRM_MIN_RET).length >= config.TP_QRM_FOR_MAX_LEVERAGE) { 
             scale = MAX_LEVERAGE }
@@ -1819,6 +1818,7 @@ const MAX_LEVERAGE = 10  //haircust will be applied
         } catch { console.log(Date.now() + ", maxMargin Failed Open,  " +  market.name ) }
         // update basis margin for the leverage chain reaction
         market.basisMargin = 1/scale
+        market.maxMarginRatio = market.basisMargin + config.TP_MARGIN_STEP_INC
     }
 }
 

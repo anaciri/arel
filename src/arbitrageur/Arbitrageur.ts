@@ -253,16 +253,82 @@ export class Arbitrageur extends BotService {
     private holosSide: Direction = Direction.ZEBRA
     private prevHolsSide: Direction = Direction.ZEBRA
     private poolState: { [keys: string]: PoolState } = {}
-
     private tickBuff: { [ticker: string]: PoolData } = {} // TO DEPRECATE
+
+    //private evtSubProvider!: ethers.providers.Provider//StaticJsonRpcProvider | WebSocketProvider;
+    private evtProviders: ethers.providers.Provider[] = [];
+    
+    // NOTE evtSubProvider (weather rpc or websocket) initialized from EVENT_SUB_ENDPOINTS, is NOT used for tx, 
+    // BotService.etherService.provider is used for tx alowg with its etherservice.rotateNextProvider
+    // evtSubProvider have their own rotateEvtSubProvider called on close or disconnect
     private evtSubProviderEndpoints: string[] = []
     private evtSubEndpointsIndex: number = 0
-    private evtSubProvider!: StaticJsonRpcProvider | WebSocketProvider;
     private evtBuffer: { [key: string]: CircularBuffer } = {};
     //convinienc list of enbled market
     enabledMarkets: string[] =[]
     enabledLegs: string[] =[]
     
+    evtRotateProvider() {
+        // Get the current provider and remove its event listeners
+        const currentProvider = this.evtProviders[ this.evtSubEndpointsIndex ];
+        if (currentProvider instanceof ethers.providers.WebSocketProvider) {
+          currentProvider._websocket.removeAllListeners('close');
+          currentProvider._websocket.removeAllListeners('disconnect');
+        }
+        currentProvider.removeAllListeners();
+    
+        // Switch to the next provider
+        const fromEndpoint = this.evtSubProviderEndpoints[this.evtSubEndpointsIndex];
+        this.evtSubEndpointsIndex = (this.evtSubEndpointsIndex + 1) % this.evtProviders.length;
+        const toEndpoint = this.evtSubProviderEndpoints[this.evtSubEndpointsIndex];
+
+        const nextProvider = this.evtProviders[this.evtSubEndpointsIndex];
+        // Add close/desconnect websocke event listeners if wss
+        if (nextProvider instanceof ethers.providers.WebSocketProvider) {
+          nextProvider._websocket.on('close', () => {
+            console.warn(Date.now() + ' WARN: Closed  ' + nextProvider.connection.url);
+            this.evtRotateProvider();
+          });
+          nextProvider._websocket.on('disconnect', () => {
+            console.warn(Date.now() + ' WARN: Disconnected ' + nextProvider.connection.url);
+            this.evtRotateProvider();
+          });
+        }// infinite recursion potential?
+        //nextProvider.on('error', (error) => { console.error(Date.now() + ' ERROR: ' + error.message);this.evtRotateProvider();});
+       
+        // reinstall swap event listeners
+        this.setupPoolListeners()
+        console.warn( Date.now() + " MONITOR: EvtSubProv Rotation from " + fromEndpoint + " to: " + toEndpoint)
+      }
+    
+    setupEvtProviders() {
+        // Create upfront the event providers (not the tx providers) based on url
+        this.evtSubProviderEndpoints = process.env.EVENT_SUB_ENDPOINTS!.split(",");
+        if (!this.evtSubProviderEndpoints) {
+          throw new Error("NO Subscription Providers in .env");
+        } else { // instantiate the providers
+          for (const endpoint of this.evtSubProviderEndpoints) {
+            if (endpoint.startsWith("wss:")) {
+              const provider = new ethers.providers.WebSocketProvider(endpoint);
+              provider._websocket.on("disconnect", () => {
+                console.warn(Date.now() + " WARN: Disconnected " + provider.connection.url);
+                this.evtRotateProvider();
+              });
+              provider._websocket.on("close", () => { // handle permanent disconnect
+                console.warn(Date.now() + " WARN: Closed  " + provider.connection.url);
+                this.evtRotateProvider();
+              });
+
+              this.evtProviders.push(provider);
+            } else { //is an rpc provider for the event subscrpition!
+              const provider = new ethers.providers.StaticJsonRpcProvider(endpoint);
+              this.evtProviders.push(provider);
+            }
+          }
+        }
+      }
+      
+
 
     async setup(): Promise<void> {
         
@@ -279,15 +345,28 @@ export class Arbitrageur extends BotService {
         // 2. allocate memory for evtBuffers for enabled tickers
         this.initDataStructs()
         this.createPoolStateMap() //<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<--- rename to initDataStruc
-        this.evtSubProviderEndpoints = process.env.EVENT_SUB_ENDPOINTS!.split(",");
-        if (!this.evtSubProviderEndpoints) { throw new Error("NO Subscription Providers in .env")}
-        else {
-            const providerEndpoint = this.evtSubProviderEndpoints[this.evtSubEndpointsIndex];
 
-            this.evtSubProvider = providerEndpoint.startsWith("wss:")
-            ? new ethers.providers.WebSocketProvider(providerEndpoint)
-            : new ethers.providers.JsonRpcProvider(providerEndpoint);
-        }   
+//--------- FACTOR OUT into separete func that can handle any type of provider        
+// this initializes ONLY the event providers NOT L2_WEB3_ENDPOINTS /
+/* HIDE
+
+this.evtSubProviderEndpoints = process.env.EVENT_SUB_ENDPOINTS!.split(",");
+if (!this.evtSubProviderEndpoints) { throw new Error("NO Subscription Providers in .env");} 
+else {
+    const providerEndpoint = this.evtSubProviderEndpoints[this.evtSubEndpointsIndex];
+    this.evtSubProvider = providerEndpoint.startsWith("wss:")
+    ? new ethers.providers.WebSocketProvider(providerEndpoint)
+    : new ethers.providers.JsonRpcProvider(providerEndpoint);
+}  
+HIDE */ 
+this.setupEvtProviders()
+        //%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%   $$$$$$$$$$$$$$$$$$$$  @@@@@@@@@@@@@@@@@@@@@@ REMOVE ME!!!
+        if (config.DEBUG_FLAG) {
+    //this.evtRotateProvider()
+ }
+        
+//----- END FACTOR OUT ------------------------------------------
+
         //else { this.evtSubProvider = new ethers.providers.JsonRpcProvider(this.evtSubProviderEndpoints[this.evtSubEndpointsIndex]);}
         await this.setupPoolListeners()
         /*/ move this to checker
@@ -297,7 +376,7 @@ export class Arbitrageur extends BotService {
             console.log("SETUP: proxy topics " + tkr + ": " + subs.topics)
         }*/
         
-        console.log("CROC: EvtSubProv: " + this.evtSubProvider.connection.url)
+       // console.log("CROC: EvtSubProv: " + this.evtSubProvider.connection.url)
         
         // DEBUG snippet ------------------------------------------
         //this.dbgSnip()
@@ -338,7 +417,7 @@ export class Arbitrageur extends BotService {
         // if too long and proxy ticker rotate provider to be safe
         if ( tkr in ["vBTC", "vETH", "vBNB"]){
             console.log( Date.now() + " MONITOR: Rotate on account of Max delay of" + tkr )
-            this.rotateEvtSubProvider()
+            //this.rotateEvtSubProvider()
         }
     }
 
@@ -392,43 +471,15 @@ export class Arbitrageur extends BotService {
     // in same second and then go 30 minutes without ticks. size of 400 should be enough
     // processInputBuff reads syncronously from inbuff and writes to outbuff 
 
-    async BKPsetupPoolListeners(): Promise<void> {
-        //for (const p of this.perpService.metadata.pools) {
-        // read subscription provider from env file
-        const currUrl = this.evtSubProviderEndpoints[this.evtSubEndpointsIndex];
-
-        for (const tkr in this.poolState) {
-            const unipool = new ethers.Contract( this.poolState[tkr].poolAddr, IUniswapV3PoolABI.abi, this.evtSubProvider)
-
-            //let unipool = this.poolState[tkr].poolContract
-            
-            // setup Swap event handler
-            unipool.on('Swap', (sender: string, recipient: string, amount0: Big, amount1: Big, sqrtPriceX96: Big, 
-                                liquidity: Big, tick: number, event: ethers.Event) =>
-                        { // Fill the bucket until the flags changes to read
-                            const timestamp = Math.floor(Date.now())
-                            this.tickBuff[tkr].bucket.push({ timestamp: timestamp, tick: tick})
-                            // if data has been read then empty tickLog
-                            //>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-                            if (this.tickBuff[tkr].isRead == true) {
-                                // keep the last tick as reference
-                                this.tickBuff[tkr].bucket.splice(0, this.tickBuff[tkr].bucket.length - 1);
-                                this.tickBuff[tkr].bucket.pop()
-                                this.tickBuff[tkr].isRead = false
-                            }
-                        // heartbeat
-                        //console.log(`HEARTBEAT: ${timestamp}, ${symb}`)    
-                        })
-        }   
-    }
-
+  
+    // agnostic if rpc or websocket
     async setupPoolListeners(): Promise<void> {
-        //for (const p of this.perpService.metadata.pools) {
-        // read subscription provider from env file
-        const currUrl = this.evtSubProviderEndpoints[this.evtSubEndpointsIndex];
-
+        //const currUrl = this.evtSubProviderEndpoints[this.evtSubEndpointsIndex];
         for (const tkr of this.enabledMarkets) {
-            const unipool = new ethers.Contract( this.poolState[tkr].poolAddr, IUniswapV3PoolABI.abi, this.evtSubProvider)
+            let currprovider = this.evtProviders[this.evtSubEndpointsIndex]
+            const unipool = new ethers.Contract( this.poolState[tkr].poolAddr, IUniswapV3PoolABI.abi, currprovider)
+
+//            const unipool = new ethers.Contract( this.poolState[tkr].poolAddr, IUniswapV3PoolABI.abi, this.evtSubProvider)
             // setup Swap event handler
             unipool.on('Swap', (sender: string, recipient: string, amount0: Big, amount1: Big, sqrtPriceX96: Big, 
                                 liquidity: Big, tick: number, event: ethers.Event) =>
@@ -682,8 +733,8 @@ if (config.TRACE_FLAG) { console.log(" TRACE: evt: " + tkr  + " " + timestamp + 
     }
  }
 }*/
-
-rotateEvtSubProvider() {
+// should work regardless of rpc or websocket protocol
+/*rotateEvtSubProvider() {
     //rotateToNextEndpoint(callback = undefined) {
         this.evtSubProvider.removeAllListeners()
         const fromEndpoint = this.evtSubProviderEndpoints[this.evtSubEndpointsIndex];
@@ -691,14 +742,16 @@ rotateEvtSubProvider() {
         const toEndpoint = this.evtSubProviderEndpoints[this.evtSubEndpointsIndex];
         // reinstall listeners
         this.setupPoolListeners()
-        console.warn( Date.now() + " MONITOR: EvtSubProv Rotation from " + fromEndpoint + " to: " + toEndpoint)
-}
-  
+        console.log( Date.now() + " EVTMON: EvtSubProv Rotation from " + fromEndpoint + " to: " + toEndpoint)
+}*/
+
 
 // DEP: poolData filled by eventListener
 // health check. 1) check foremost the proxies subscriptions are OK 2) check on the other pools
 // detect discontinuity and drain bucket 
 // tickBuff is the lowlevel DS using only by eventhandler and this checker that copies it inot statePool
+//DEPRECATED
+/*
 checkOnPoolSubEmptyBucket(): void {
     for (const tkr in this.poolState) {   
         // poll each pool to detect discontinuity and empty bucket
@@ -737,15 +790,16 @@ checkOnPoolSubEmptyBucket(): void {
         const lastRowValues = lastRowString.split(',');
         const ts = parseInt(lastRowValues[1])
         const age = Date.now() - ts
-        //if ( (age) > 1000 * config.MON_MAX_TIME_WITH_NO_EVENTS_SEC ){
+        //if ( (age) > 1000 * config. ){
         if ( (age) > 1000 * config.MON_MAX_TIME_WITH_NO_EVENTS_SEC ){
-            this.rotateEvtSubProvider()
+            //this.rotateEvtSubProvider()
         }
     } catch (err: any) {
         if (err.code === 'ENOENT') { console.log('tick csv empty, skipping rotation check.');
         } else { throw err; }
       }
 }
+*/
 // process inbuff produced by eventListener to update cycle tick deltal for enabled markets
 // 2. pull last 30 mins of data. xlcuding 1), 1. pull the last cycle seconds of data. 3. if nothing 
 // in the last cycle worth, return, 4. if no tick in the 30min buff return, nxt minute for sure will have something
@@ -766,7 +820,7 @@ processEventInputs(): void {
     //set cyclevals to dbgTicks in debug
     
     // skip if no data since last cycle. first trace
-let cvals = cyclevals.map(obj => [obj.timestamp, obj.tick])
+//let cvals = cyclevals.map(obj => [obj.timestamp, obj.tick])
 //if( config.TRACE_FLAG) { console.log(now + " TRACE: " + tkr + " ciclo: " + cvals) }
     if (Object.keys(cyclevals).length == 0) { continue }
 
@@ -787,30 +841,33 @@ let cvals = cyclevals.map(obj => [obj.timestamp, obj.tick])
     const lastThirtyMinutesData = this.evtBuffer[tkr].getDataAt(lastThirtyMinutesStart);
     // compute lastThirtyMinutes (excluding the last cycle values)
     lastThirtyMinutesData.splice(-cticks.length);
-if( config.TRACE_FLAG) { console.log(now + " TRACE: " + tkr + " membuff.sz: " + membuffsz) }
+if( config.TRACE_FLAG) { console.log(now + " EVTSUB: " + tkr + " membuff.sz: " + membuffsz) }
 
     // compute the weighted arithmetic mean for the last thirty minutes
     const buffvals = Object.values(lastThirtyMinutesData);
     const bweights = buffvals.map((tick, i) => i + 1);
     const tickBasis = this.computeWeightedArithAvrg(buffvals, bweights);
-if( config.TRACE_FLAG) { console.log(now + " TRACE: " + tkr + " wcycleTicks: " + wtick + " tickBasis: " + tickBasis) }
+if( config.TRACE_FLAG) { console.log(now + " EVTSUB: " + tkr + " wcycleTicks: " + wtick.toFixed() + " tickBasis: " + tickBasis.toFixed()) }
 
     // update cycleDelta for each pool. consumed by mktDirection and soon maxloss
     this.poolState[tkr].cycleTickDelta = wtick - tickBasis;
     this.poolState[tkr].cycleTickDeltaTs = cyclevals[cyclevals.length-1].timestamp
-if( config.TRACE_FLAG) { console.log(now + " TRACE: " + tkr + " cTkDelta: " + this.poolState[tkr].cycleTickDelta) }
-    console.log( Date.now() + " MONITOR: " + tkr + ": cycleTickDelta: " + this.poolState[tkr].cycleTickDelta.toFixed(2) )
+//if( config.TRACE_FLAG) { console.log(now + " TRACE: " + tkr + " cTkDelta: " + this.poolState[tkr].cycleTickDelta.toFixed()) }
+    console.log( Date.now() + " EVTSUB: " + tkr + ": cycleTickDelta: " + this.poolState[tkr].cycleTickDelta.toFixed(2) )
 
     // check for discontinuity of events by comparing in the circular buffer age of the last buffer entry
+
+    //&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&%%%%%%%%%%%%%%%%%%%%%%%%%%%%% FACTOR OUT
+
     const age = now - this.evtBuffer[tkr].getLatest().timestamp
     if ( age > config.MON_MAX_TIME_WITH_NO_EVENTS_SEC * 1000 ) { 
-        console.log( now + " MONITOR: " + tkr + ": No events in " + (age/60000).toFixed() + " mins")
+        console.warn(now + "MONITOR:" + tkr + ": No events in " + (age/60000).toFixed(2) + " mins")
+        console.log( now + " MONITOR: " + tkr + ": No events in " + (age/60000).toFixed(2) + " mins")
         
-        // if too long and proxy ticker rotate provider to be safe
-        if ( tkr in ["vBTC", "vETH", "vBNB"]){
+        // if too long and proxy ticker rotate provider to be safe: NOT USING PROXY ANYMORE
+        /*if ( tkr in ["vBTC", "vETH", "vBNB"]){
             console.log( Date.now() + " MONITOR: Rotate on account of Max delay of" + tkr )
-            this.rotateEvtSubProvider()
-        }
+            this.rotateEvtSubProvider()} */
     }
     // we already checked that there is new data in cylcevals
     let last = cyclevals[cyclevals.length-1]

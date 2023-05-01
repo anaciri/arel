@@ -475,9 +475,13 @@ this.setupEvtProviders()
   
     // agnostic if rpc or websocket
     async setupPoolListeners(): Promise<void> {
-        //const currUrl = this.evtSubProviderEndpoints[this.evtSubEndpointsIndex];
+        let currprovider = this.evtProviders[this.evtSubEndpointsIndex]
+        let url =""
+        if (currprovider instanceof ethers.providers.WebSocketProvider) { url = (currprovider as ethers.providers.WebSocketProvider).connection.url} 
+        else if (currprovider instanceof ethers.providers.JsonRpcProvider) { url = (currprovider as ethers.providers.JsonRpcProvider).connection.url}
+        console.log(Date.now() + " EVTMON: evtprovider: " + url)
+
         for (const tkr of this.enabledMarkets) {
-            let currprovider = this.evtProviders[this.evtSubEndpointsIndex]
             const unipool = new ethers.Contract( this.poolState[tkr].poolAddr, IUniswapV3PoolABI.abi, currprovider)
 
 //            const unipool = new ethers.Contract( this.poolState[tkr].poolAddr, IUniswapV3PoolABI.abi, this.evtSubProvider)

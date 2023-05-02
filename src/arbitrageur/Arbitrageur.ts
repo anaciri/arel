@@ -1791,7 +1791,8 @@ const MAX_LEVERAGE = 10  //haircust will be applied
     let perpmr = await this.perpService.getMarginRatio(market.wallet.address)
     if (!perpmr) {  throw new Error(market.name + " FAIL: pmr null in maxMaxMarginRatioCheck")}
 
-    if (config.TRACE_FLAG) { console.log("TRACE: " + market.name + " perpmr: " + perpmr.toFixed(4) +  " perppnl: " + perppnl.toFixed(4)) }
+    if (config.TRACE_FLAG) { console.log("TRACE: " + market.name + " perpmr: " + perpmr.toFixed(4) 
+                                + "maxmr: " + market.maxMarginRatio.toFixed(4) + " perppnl: " + perppnl.toFixed(4)) }
     //TODO.OPTIMIZE: if (perppnl < 0 ) { return }
 
     let freec = (await this.perpService.getFreeCollateral(market.wallet.address)).toNumber()

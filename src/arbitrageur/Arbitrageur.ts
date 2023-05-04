@@ -1791,8 +1791,8 @@ const MAX_LEVERAGE = 10  //haircust will be applied
     let perpmr = await this.perpService.getMarginRatio(market.wallet.address)
     if (!perpmr) {  throw new Error(market.name + " FAIL: pmr null in maxMaxMarginRatioCheck")}
 
-    if (config.TRACE_FLAG) { console.log("TRACE: " + market.name + " perpmr: " + perpmr.toFixed(4) 
-                                + "maxmr: " + market.maxMarginRatio.toFixed(4) + " perppnl: " + perppnl.toFixed(4)) }
+    if (config.TRACE_FLAG) { console.log("TRACE: " + market.name + " perpmr:" + perpmr.toFixed(4) 
+                                +  " maxmr:" + market.maxMarginRatio.toFixed(4) + " perppnl: " + perppnl.toFixed(4)) }
     //TODO.OPTIMIZE: if (perppnl < 0 ) { return }
 
     let freec = (await this.perpService.getFreeCollateral(market.wallet.address)).toNumber()
@@ -1807,19 +1807,29 @@ const MAX_LEVERAGE = 10  //haircust will be applied
         // do i have qrom of already same-side-opened profitable positions to fastract?
         if (urets.filter((uret) => uret > config.TP_QRM_MIN_RET).length >= config.TP_QRM_FOR_MAX_LEVERAGE) { 
             scale = MAX_LEVERAGE }
-        else { //snap, just the step increment
-            scale = Math.min( 1/(market.basisMargin + config.TP_MARGIN_STEP_INC), MAX_LEVERAGE)
-        }
+        /*else { //snap, just the step increment
+            let newmr = Math.max(market.basisMargin - config.TP_MARGIN_STEP_INC, 1/MAX_LEVERAGE)
+            scale = 1/newmr
+        }*/
         // ok. scale settled ready to open
         let usdAmount = freec*scale*config.TP_EXECUTION_HAIRCUT
-        try { 
+        try {  // open at current leverage
             await this.open(market, usdAmount) 
             console.log(Date.now() + " INFO: SCALE " + market.name + " mr: " + perpmr.toFixed(4) +  
                                   " usdamnt: " + usdAmount.toFixed(4) + " freec: " + freec.toFixed(4)) 
         } catch { console.log(Date.now() + ", maxMargin Failed Open,  " +  market.name ) }
-        // update basis margin for the leverage chain reaction
-        market.basisMargin = 1/scale
-        market.maxMarginRatio = market.basisMargin + config.TP_MARGIN_STEP_INC
+        // update basis = current mr and max = basis-decrement 
+        let postscalemr = await this.perpService.getMarginRatio(market.wallet.address)
+        if (postscalemr) {  // mr should be lower than basis mr since we added freec to our position
+            market.basisMargin = postscalemr.toNumber() 
+            // update max margin increasing from latest basis with a max of 1 (no leverage)
+            market.maxMarginRatio = Math.min(market.basisMargin + config.TP_MARGIN_STEP_INC, 1)
+        }
+        else { // couldnt get current mr. keep both unchanged but warn
+            console.warn(Date.now() + " WARN: " + market.name + " FAIL: getMarginRatio null using")
+            console.log(Date.now() + " WARN: " + market.name + " postcale margin: " + postscalemr )
+        }
+        // update basis margin. if null use 1/scale
     }
 }
 

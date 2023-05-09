@@ -690,6 +690,7 @@ if (config.TRACE_FLAG) { console.log(" TRACE: evt: " + tkr  + " " + timestamp + 
  }
 
     async arbitrageRoutine() {
+        let lastEvtCheckTime = Date.now()
         while (true) {
             //TODO.STK turn on heart beat below
             //this.markRoutineAlive("ArbitrageRoutine")
@@ -703,8 +704,17 @@ if (config.TRACE_FLAG) { console.log(" TRACE: evt: " + tkr  + " " + timestamp + 
                 }),
             )
             await sleep(config.PRICE_CHECK_INTERVAL_SEC * 1000)
+
+            // Run evtNodeCheck if EVT_PROVIDER_CHECK_INTERVAL_SEC seconds have elapsed since the last call
+            const now = Date.now();
+            if (now - lastEvtCheckTime >= config.EVT_PROVIDER_CHECK_INTERVAL_SEC * 1000) {
+                this.evtNodeCheck();
+                lastEvtCheckTime = now; // update the lastEvtCheckTime variable with the current time
+            }
         }
     }
+
+    
 
     
 //------------------
@@ -823,11 +833,8 @@ processEventInputs(): void {
     const now = Date.now();
     const cutoff = now - config.PRICE_CHECK_INTERVAL_SEC * 1000;
     const cyclevals = this.evtBuffer[tkr].getDataAt(cutoff);
-    //set cyclevals to dbgTicks in debug
     
-    // skip if no data since last cycle. first trace
-//let cvals = cyclevals.map(obj => [obj.timestamp, obj.tick])
-//if( config.TRACE_FLAG) { console.log(now + " TRACE: " + tkr + " ciclo: " + cvals) }
+    // skip this tkr if no data since last cycle
     if (Object.keys(cyclevals).length == 0) { continue }
 
     // compute the weighted arithmetic mean for the last cycle seconds
@@ -842,7 +849,8 @@ processEventInputs(): void {
     // compute lastThirtyMinutes-memory (excluding the last cycle values)
     // first ensure we have some memory
     let membuffsz = this.evtBuffer[tkr].getLength()
-    if (membuffsz < cyclevals.length + 1) { return }
+    //if (membuffsz < cyclevals.length + 1) { return }
+    if (membuffsz < cyclevals.length + 1) { continue }  // WAS a return, shoulnt be a continue? 
     const lastThirtyMinutesStart = cutoff - 30 * 60 * 1000;
     const lastThirtyMinutesData = this.evtBuffer[tkr].getDataAt(lastThirtyMinutesStart);
     // compute lastThirtyMinutes (excluding the last cycle values)
@@ -1793,7 +1801,7 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
         if (!perpmr) {  throw new Error(market.name + " FAIL: pmr null in maxMaxMarginRatioCheck")}
 
         if (config.TRACE_FLAG) { console.log("TRACE: " + market.name + " perpmr:" + perpmr.toFixed(4) 
-                                    +  " maxmr:" + market.maxMarginRatio.toFixed(4) + " perppnl: " + perppnl.toFixed(2)
+                                    +  " maxmr:" + market.maxMarginRatio.toFixed(4) + " perppnl:" + perppnl.toFixed(2)
                                     +  " mrdlt:" + (market.maxMarginRatio - perpmr.toNumber()).toFixed(4) ) }
         //TODO.OPTIMIZE: if (perppnl < 0 ) { return }
     
@@ -1816,7 +1824,7 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
                 let newmr = Math.max(market.basisMargin - config.TP_MARGIN_STEP_INC, 1/MAX_LEVERAGE)
                 scale = 1/newmr
             }*/
-            // ok. scale settled ready to open
+            // ok. scale settled ready to opend
             let usdAmount = freec*scale*config.TP_EXECUTION_HAIRCUT
             try {  
                 await this.open(market, usdAmount) 
@@ -2050,9 +2058,31 @@ async ensureSwapListenersOK(): Promise<void> {
     await this.ratchedMaxLeverageTriggerCheck(market) 
     //await this.maxMaxMarginRatioCheck(market)
     await this.wakeUpCheck(market) //wakeup only favored leg if sided mkt else both
+
   }
   //---------------- end of routine  -----------------------------------------------------
 
+  evtNodeCheck() {
+    let reftkrs = ["vBTC", "vETH", "vAAVE", "vSOL"];
+    let now = Date.now();
+    
+    let latestTimestamp = 0
+    for (let tkr of reftkrs) {
+      let latestEvt = this.evtBuffer[tkr].getLatest();
+      if (latestEvt && latestEvt.timestamp > latestTimestamp) {
+        latestTimestamp = latestEvt.timestamp;
+      }
+    }
+    // if no timestamps, buffers still empty return
+    if (latestTimestamp == 0) return
+    // if time in secs relative to latestTimestamp gt MON_MAX_TIME_WITH_NO_EVENTS_SEC rotate
+    let age = now - latestTimestamp
+    if ( age > config.MON_MAX_TIME_WITH_NO_EVENTS_SEC * 1000) {
+        console.warn("WARN: " + age/60000 + " mins with no events. rotating provider");
+        console.log("EVTMON: " + age/60000 + " mins with no events. rotating provider");
+        this.evtRotateProvider()
+    }
+   }
     //DEPRECATED-----------------
     async holosDirectionChangeCheck(): Promise<boolean> {
         // which pools have moved at least say 10 ticks to ignore noise

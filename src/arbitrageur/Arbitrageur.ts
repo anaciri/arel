@@ -561,7 +561,8 @@ if (config.TRACE_FLAG) { console.log(" TRACE: evt: " + tkr  + " " + timestamp + 
                 maxReturn: market.MAX_RETURN,
                 uret: 1,
                 minMarginRatio: market.MIN_MARGIN_RATIO,
-                maxMarginRatio: market.MAX_MARGIN_RATIO,
+                //maxMarginRatio: market.MAX_MARGIN_RATIO,
+                maxMarginRatio: market.RESET_MARGIN + config.TP_MARGIN_STEP_INC,
                 initCollateral: market.START_COLLATERAL,  // will not change until restart
                 startCollateral: market.START_COLLATERAL, // will change to previous settled collatera
                 idxBasisCollateral: market.START_COLLATERAL, // incl unrealized profit
@@ -1783,7 +1784,62 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
   }
 
   // chain scale reaction i.e scale causing additional scaleing
-async ratchedMaxLeverageTriggerCheck(market: Market) {
+  async ratchedMaxLeverageTriggerCheck(market: Market) {
+    const MAX_LEVERAGE = 10  //haircust will be applied
+        if ( !(await this.isNonZeroPos(market)) ) {return}
+    //TODO.OPTIMIZE remove perpnl not used
+        let perppnl = (await this.perpService.getUnrealizedPnl(market.wallet.address)).toNumber()
+        let perpmr = await this.perpService.getMarginRatio(market.wallet.address)
+        if (!perpmr) {  throw new Error(market.name + " FAIL: pmr null in maxMaxMarginRatioCheck")}
+
+        if (config.TRACE_FLAG) { console.log("TRACE: " + market.name + " perpmr:" + perpmr.toFixed(4) 
+                                    +  " maxmr:" + market.maxMarginRatio.toFixed(4) + " perppnl: " + perppnl.toFixed(2)
+                                    +  " mrdlt:" + (market.maxMarginRatio - perpmr.toNumber()).toFixed(4) ) }
+        //TODO.OPTIMIZE: if (perppnl < 0 ) { return }
+    
+        let freec = (await this.perpService.getFreeCollateral(market.wallet.address)).toNumber()
+        if (freec < config.TP_MIN_FREE_COLLATERAL ) { return }
+    
+        // check if crossed threshold. two tracks regular track LEV_INC or fastrack to MAX_LEVERAGE
+        if ( perpmr.toNumber() > market.maxMarginRatio ) {
+            // scale to current maxMarginRatio. to get higher leverage. TODO: asses if better to use current mr at lower lvrj
+            let scale = 1/market.maxMarginRatio
+            //let scale = 1/market.basisMargin
+            // check if I can fastract scale to MAX_LEVERAGE
+            let urets = market.side == Side.LONG ? (await this.getOpenLegUrets()).uretLongs
+                                                 : (await this.getOpenLegUrets()).uretShorts
+            // do i have qrom of already same-side-opened profitable positions to fastract?
+            if (urets.filter((uret) => uret > config.TP_QRM_MIN_RET).length >= config.TP_QRM_FOR_MAX_LEVERAGE) { 
+                console.log(Date.now() + " INFO: ACCEL2MAXMR " + market.name + " mr: ")
+                scale = MAX_LEVERAGE }
+            /*else { //snap, just the step increment
+                let newmr = Math.max(market.basisMargin - config.TP_MARGIN_STEP_INC, 1/MAX_LEVERAGE)
+                scale = 1/newmr
+            }*/
+            // ok. scale settled ready to open
+            let usdAmount = freec*scale*config.TP_EXECUTION_HAIRCUT
+            try {  
+                await this.open(market, usdAmount) 
+                console.log(Date.now() + " INFO: SCALE " + market.name + " mr: " + perpmr.toFixed(4) +  
+                                      " usdamnt: " + usdAmount.toFixed(4) + " freec: " + freec.toFixed(4)) 
+            } catch { console.log(Date.now() + ", maxMargin Failed Open,  " +  market.name ) }
+            // decrement maxMarginRatio
+            market.maxMarginRatio = Math.max(market.maxMarginRatio - config.TP_MARGIN_STEP_INC, 1/MAX_LEVERAGE)
+            /*let postscalemr = await this.perpService.getMarginRatio(market.wallet.address)
+            if (postscalemr) {  // mr should be lower than basis mr since we added freec to our position
+                market.basisMargin = postscalemr.toNumber() 
+                // update max margin increasing from latest basis with a max of 1 (no leverage)
+                market.maxMarginRatio = Math.min(market.basisMargin + config.TP_MARGIN_STEP_INC, 1)
+            }
+            else { // couldnt get current mr. keep both unchanged but warn
+                console.warn(Date.now() + " WARN: " + market.name + " FAIL: getMarginRatio null using")
+                console.log(Date.now() + " WARN: " + market.name + " postcale margin: " + postscalemr )
+            }*/
+            // update basis margin. if null use 1/scale
+        }
+    }
+
+async BKPratchedMaxLeverageTriggerCheck(market: Market) {
 const MAX_LEVERAGE = 10  //haircust will be applied
     if ( !(await this.isNonZeroPos(market)) ) {return}
 
@@ -1806,6 +1862,7 @@ const MAX_LEVERAGE = 10  //haircust will be applied
                                              : (await this.getOpenLegUrets()).uretShorts
         // do i have qrom of already same-side-opened profitable positions to fastract?
         if (urets.filter((uret) => uret > config.TP_QRM_MIN_RET).length >= config.TP_QRM_FOR_MAX_LEVERAGE) { 
+            console.log(Date.now() + " INFO: ACCEL2MAXMR " + market.name + " mr: ")
             scale = MAX_LEVERAGE }
         /*else { //snap, just the step increment
             let newmr = Math.max(market.basisMargin - config.TP_MARGIN_STEP_INC, 1/MAX_LEVERAGE)

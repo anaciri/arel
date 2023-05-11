@@ -1190,7 +1190,7 @@ async getOpenLegUrets() {
 // returns a value from 0 to max laverage
 // amygadala shortcut if side count is higher than qrom then automatic 10x in favored side and MIN leverage in other
 // if both sides qrom i.e high dispersion then 10x in both and rely on maxloss/solidaritkll to exit
-
+//TODO.DEPRECATED
 async computeKellyLeverage() {
     const MAX_LEVERAGE = 10  // will be haircut
     // for the very first time you will need to have a minimum leverage otherwise factor will be zero
@@ -1796,13 +1796,13 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
     const MAX_LEVERAGE = 10  //haircust will be applied
         if ( !(await this.isNonZeroPos(market)) ) {return}
     //TODO.OPTIMIZE remove perpnl not used
-        let perppnl = (await this.perpService.getUnrealizedPnl(market.wallet.address)).toNumber()
+        //let perppnl = (await this.perpService.getUnrealizedPnl(market.wallet.address)).toNumber()
         let perpmr = await this.perpService.getMarginRatio(market.wallet.address)
         if (!perpmr) {  throw new Error(market.name + " FAIL: pmr null in maxMaxMarginRatioCheck")}
 
         if (config.TRACE_FLAG) { console.log("TRACE: " + market.name + " perpmr:" + perpmr.toFixed(4) 
-                                    +  " maxmr:" + market.maxMarginRatio.toFixed(4) + " perppnl:" + perppnl.toFixed(2)
-                                    +  " mrdlt:" + (market.maxMarginRatio - perpmr.toNumber()).toFixed(4) ) }
+                                    +  " maxmr:" + market.maxMarginRatio.toFixed(4) 
+                                    +  " mrdbp:" + (100*(market.maxMarginRatio - perpmr.toNumber())).toFixed(4) ) }
         //TODO.OPTIMIZE: if (perppnl < 0 ) { return }
     
         let freec = (await this.perpService.getFreeCollateral(market.wallet.address)).toNumber()
@@ -1818,7 +1818,7 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
                                                  : (await this.getOpenLegUrets()).uretShorts
             // do i have qrom of already same-side-opened profitable positions to fastract?
             if (urets.filter((uret) => uret > config.TP_QRM_MIN_RET).length >= config.TP_QRM_FOR_MAX_LEVERAGE) { 
-                console.log(Date.now() + " INFO: ACCEL2MAXMR " + market.name + " mr: ")
+                console.log(Date.now() + " INFO: SCALE 2 MAXMR " + market.name + " mr: ")
                 scale = MAX_LEVERAGE }
             /*else { //snap, just the step increment
                 let newmr = Math.max(market.basisMargin - config.TP_MARGIN_STEP_INC, 1/MAX_LEVERAGE)
@@ -1831,8 +1831,16 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
                 console.log(Date.now() + " INFO: SCALE " + market.name + " mr: " + perpmr.toFixed(4) +  
                                       " usdamnt: " + usdAmount.toFixed(4) + " freec: " + freec.toFixed(4)) 
             } catch { console.log(Date.now() + ", maxMargin Failed Open,  " +  market.name ) }
-            // decrement maxMarginRatio
-            market.maxMarginRatio = Math.max(market.maxMarginRatio - config.TP_MARGIN_STEP_INC, 1/MAX_LEVERAGE)
+            // compute next maxMarginRatio: post scale mr + step increment
+            let postscalemr = await this.perpService.getMarginRatio(market.wallet.address)
+            if (postscalemr) {  
+                market.maxMarginRatio = Math.min(postscalemr.toNumber() + config.TP_MARGIN_STEP_INC, 1)
+            }
+            else { // couldnt get current mr. keep both unchanged but warn
+                console.log(Date.now() + " WARN: " + market.name + " FAIL: maxmarging unchaged. getMarginRatio null")
+                console.log(Date.now() + " WARN: " + market.name + " scale failed. postcale margin: " + postscalemr )
+            }
+            //market.maxMarginRatio = Math.max(market.maxMarginRatio - config.TP_MARGIN_STEP_INC, 1/MAX_LEVERAGE)
             /*let postscalemr = await this.perpService.getMarginRatio(market.wallet.address)
             if (postscalemr) {  // mr should be lower than basis mr since we added freec to our position
                 market.basisMargin = postscalemr.toNumber() 

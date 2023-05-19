@@ -12,7 +12,7 @@ import { ethers } from "ethers"
 import { max, padEnd, update, upperFirst } from "lodash"
 import { decode } from "punycode"
 import { Service } from "typedi"
-import config from "../configs/config.json"
+
 import * as fs from 'fs'
 import { tmpdir } from "os"
 import { time, timeStamp } from "console"
@@ -25,12 +25,30 @@ import { checkServerIdentity } from "tls"
 import { dbgnow } from "../dbg/crocDebug"
 import { parse } from 'csv-parse';
 import { getHeapSnapshot } from "v8"
+import { readFileSync } from 'fs';
 
-const jsonfile = require('jsonfile');
-
-
+interface MarketConfig {
+    IS_ENABLED: boolean;
+    TP_LONG_MIN_TICK_DELTA: number;
+    TP_SHORT_MIN_TICK_DELTA: number;
+    IS_EMERGENCY_REDUCE_MODE_ENABLED?: boolean;
+    MIN_RETURN: number;
+    MAX_RETURN: number;
+    MIN_MARGIN_RATIO: number;
+    MAX_MARGIN_RATIO: number;
+    START_COLLATERAL: number;
+    RESET_MARGIN: number;
+  }
+  
+//const jsonfile = require('jsonfile');
 let dbgcTicks: TickData[] = []; // declare variable outside if statement
 let dbgmTicks: TickData[] = [];
+
+const configPath = process.env.CONFIG_PATH;
+if (!configPath) { throw new Error('CONFIG_PATH environment variable is not set.') }
+
+const configJson = readFileSync(configPath, 'utf-8');
+const config = JSON.parse(configJson);
 
 if (config.DEBUG_FLAG) {
     import('../dbg/crocDebug').then(module => {
@@ -170,10 +188,7 @@ function decodeEvt(unipool: UniswapV3Pool ,eventdata: any) {
             console.log("token0Address: ", token0Address);
 }
 
-interface Result<T> {
-    error?: Error;
-    positive: T | null;
-  }
+interface Result<T> { error?: Error; positive: T | null;}
 
 // below not used remove
 const OP_USDC_ADDR = '0x7F5c764cBc14f9669B88837ca1490cCa17c31607'
@@ -544,8 +559,11 @@ if (config.TRACE_FLAG) { console.log(" TRACE: evt: " + tkr  + " " + timestamp + 
    async createMarketMap() {
         const poolMap: { [keys: string]: any } = {}
         for (const pool of this.perpService.metadata.pools) { poolMap[pool.baseSymbol] = pool }
-        for (const [marketName, market] of Object.entries(config.MARKET_MAP)) {
+        //for (const [marketName, market] of Object.entries(config.MARKET_MAP)) {
+        for (const [marketName, marketConfig] of Object.entries(config.MARKET_MAP)) {
+            const market: MarketConfig = marketConfig as MarketConfig;
             if (!market.IS_ENABLED) { continue }
+            //if (!market.IS_ENABLED) { continue }
             const pool = poolMap[marketName.split('_')[0]]
             
             this.marketMap[marketName] = {
@@ -707,8 +725,8 @@ if (config.TRACE_FLAG) { console.log(" TRACE: evt: " + tkr  + " " + timestamp + 
 
             // Run evtNodeCheck if EVT_PROVIDER_CHECK_INTERVAL_SEC seconds have elapsed since the last call
             const now = Date.now();
-            if (now - lastEvtCheckTime >= config.EVT_PROVIDER_CHECK_INTERVAL_SEC * 1000) {
-                this.evtNodeCheck();
+            if ( now - lastEvtCheckTime >= config.EVT_PROVIDER_CHECK_INTERVAL_SEC * 1000 ) {
+                this.evtNodeCheck( lastEvtCheckTime )
                 lastEvtCheckTime = now; // update the lastEvtCheckTime variable with the current time
             }
         }
@@ -1802,7 +1820,7 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
 
         if (config.TRACE_FLAG) { console.log("TRACE: " + market.name + " perpmr:" + perpmr.toFixed(4) 
                                     +  " maxmr:" + market.maxMarginRatio.toFixed(4) 
-                                    +  " mrdbp:" + (100*(market.maxMarginRatio - perpmr.toNumber())).toFixed(4) ) }
+                                    +  " mrp: " + (10000*(market.maxMarginRatio - perpmr.toNumber())).toFixed() ) }
         //TODO.OPTIMIZE: if (perppnl < 0 ) { return }
     
         let freec = (await this.perpService.getFreeCollateral(market.wallet.address)).toNumber()
@@ -2069,25 +2087,25 @@ async ensureSwapListenersOK(): Promise<void> {
 
   }
   //---------------- end of routine  -----------------------------------------------------
-
-  evtNodeCheck() {
-    let reftkrs = ["vBTC", "vETH", "vAAVE", "vSOL"];
+// last timestamp from routine, gets updated after this funcs completes
+  evtNodeCheck(latestTimestamp: Timestamp) {
+    //let reftkrs = ["vBTC", "vETH", "vAAVE", "vSOL", "vFLOW"];
     let now = Date.now();
     
-    let latestTimestamp = 0
-    for (let tkr of reftkrs) {
+    //for (let tkr of reftkrs) {
+    for (let tkr of this.enabledMarkets) {    
       let latestEvt = this.evtBuffer[tkr].getLatest();
       if (latestEvt && latestEvt.timestamp > latestTimestamp) {
         latestTimestamp = latestEvt.timestamp;
       }
     }
-    // if no timestamps, buffers still empty return
-    if (latestTimestamp == 0) return
-    // if time in secs relative to latestTimestamp gt MON_MAX_TIME_WITH_NO_EVENTS_SEC rotate
+    // if buffer empty. still rotate if time exceeds MON_MAX_TIME_WITH_NO_EVENTS_SEC
     let age = now - latestTimestamp
+    //if (latestTimestamp == 0) return
+      
     if ( age > config.MON_MAX_TIME_WITH_NO_EVENTS_SEC * 1000) {
-        console.warn("WARN: " + age/60000 + " mins with no events. rotating provider");
-        console.log("EVTMON: " + age/60000 + " mins with no events. rotating provider");
+        console.warn("WARN: " + (age/60000).toFixed() + " mins with no events. rotating provider");
+        console.log("EVTMON: " + (age/60000).toFixed() + " mins with no events. rotating provider");
         this.evtRotateProvider()
     }
    }

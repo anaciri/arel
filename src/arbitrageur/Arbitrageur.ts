@@ -349,7 +349,7 @@ export class Arbitrageur extends BotService {
     async setup(): Promise<void> {
         
        // Print the names and values of all the variables that match the pattern 'v[A-Z]{3,}'
-        const pattern = /^v[A-Z]{3,}/  
+        const pattern = /^v[A-Z]{2,}/  
         let vk = Object.entries(process.env).filter(([k])=> pattern.test(k))
         for (const [key, value] of vk) { this.pkMap.set(key, value!) }
           
@@ -1261,7 +1261,7 @@ if (config.TRACE_FLAG) { console.log(now + " TRACE: wakeUpCheck: " + mkt.tkr + "
     let tickDelta = this.poolState[mkt.tkr].cycleTickDelta
 
     // if absolute tickDelta too small dont bother
-if (config.TRACE_FLAG) { console.log(now + " TRACE: wakeUpCheck: " + mkt.tkr + " tkdlt: " + tickDelta.toFixed()) }
+if (config.TRACE_FLAG) { console.log(new Date().toLocaleString() + " TRACE: wakeUpCheck: " + mkt.tkr + " tkdlt: " + tickDelta.toFixed()) }
 
     if (Math.abs(tickDelta) < mkt.longEntryTickDelta) { return false }
     

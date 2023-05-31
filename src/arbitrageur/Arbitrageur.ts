@@ -1039,50 +1039,17 @@ async closeMkt( mktName: string) {
             throw e
         }
  } 
- /*
- async updateConfig() {
-   // Read CSV and store values in a dictionary
-   const collateralValues: Record<string, number> = {};
-   // wait for the csv to be generated
-   await this.genTWreport()
- 
-   const csvData = fs.readFileSync('twreport.csv');
-   parse(csvData, {}, (err, rows) => {
-     if (err) {
-       console.error(err);
-       return;
-     }
- 
-     for (const row of rows) {
-       if (row[3] === 'true') {
-         collateralValues[row[0]] = this.marketMap[row[0]].wBasisCollateral;
-       } else {
-         collateralValues[row[0]] = parseFloat(row[2]);
-       }
-     }
- 
-     // Open config file and modify START_COLLATERAL values based on dictionary values
-     const configData = jsonfile.readFileSync('./src/configs/config.json');
-     for (const key in configData['MARKET_MAP']) {
-       if (key in collateralValues) {
-         configData['MARKET_MAP'][key]['START_COLLATERAL'] = collateralValues[key];
-       }
-     }
- 
-     jsonfile.writeFileSync('config-draft.json', configData, { spaces: 4 });
-   });
- }*/
- 
+
  
 // dont hang around too much
  async genTWreport() {
     const writeStream = fs.createWriteStream('twreport.csv');
-    writeStream.write(`name, startCollat, endCollat, open\n`);
+    writeStream.write(`name, startCollat, endCollat, bmargin, open\n`);
   
     for (const m of Object.values(this.marketMap)) {
       let open = await this.isNonZeroPos(m) ? "true" : "false";
       //let finalcollat = open ? this.poolState[m] : m.idxBasisCollateral
-      writeStream.write(`${m.name}, ${m.initCollateral}, ${m.idxBasisCollateral}, ${open}\n`);
+      writeStream.write(`${m.name}, ${m.initCollateral}, ${m.idxBasisCollateral}, ${m.basisMargin},${open}\n`);
     }
   
     writeStream.on('finish', () => {

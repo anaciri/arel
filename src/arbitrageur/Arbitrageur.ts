@@ -240,6 +240,7 @@ interface Market {
 //    peakCollateral: number
     resetMargin: number
     basisMargin: number
+    currMargin:number
     //leverage: number
     resetNeeded:boolean
     resetSize: number
@@ -587,6 +588,7 @@ if (config.TRACE_FLAG) { console.log(" TRACE: evt: " + tkr  + " " + timestamp + 
                 wBasisCollateral: market.START_COLLATERAL, // same starting point as idx
                 resetMargin: market.RESET_MARGIN,
                 basisMargin: market.RESET_MARGIN,
+                currMargin: market.RESET_MARGIN,
                 longEntryTickDelta: market.TP_LONG_MIN_TICK_DELTA,
                 shortEntryTickDelta: market.TP_SHORT_MIN_TICK_DELTA,
                 openMark:null,
@@ -1049,7 +1051,7 @@ async closeMkt( mktName: string) {
     for (const m of Object.values(this.marketMap)) {
       let open = await this.isNonZeroPos(m) ? "true" : "false";
       //let finalcollat = open ? this.poolState[m] : m.idxBasisCollateral
-      writeStream.write(`${m.name}, ${m.initCollateral}, ${m.idxBasisCollateral}, ${m.basisMargin},${open}\n`);
+      writeStream.write(`${m.name}, ${m.initCollateral}, ${m.idxBasisCollateral}, ${m.currMargin},${open}\n`);
     }
   
     writeStream.on('finish', () => {
@@ -1066,27 +1068,7 @@ async closeMkt( mktName: string) {
     writeStream.end();
   }
 
-  BKPgenTWreport() {
-    const writeStream = fs.createWriteStream('twreport.csv');
-    writeStream.write(`name, startCollat, endCollat, isSettled\n`);
-  
-    for (const m of Object.values(this.marketMap)) {
-      const isSettled = m.startCollateral === m.idxBasisCollateral ? "true" : "false";
-      writeStream.write(`${m.name}, ${m.initCollateral}, ${m.idxBasisCollateral}, ${isSettled}\n`);
-    }
-  
-    writeStream.on('finish', () => {
-      console.log('Report written successfully.');
-      process.exit(0);
-    });
-  
-    writeStream.on('error', (err) => {
-      console.error(`Failed to write report: ${err}`);
-      process.exit(1);
-    });
-  
-    writeStream.end();
-  }
+
   
 //----------------------------------
 //maxCumLossCheck(mkt: Market): Result<number> { return {value: null } }
@@ -1838,6 +1820,7 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
             }*/
             // update basis margin. if null use 1/scale
         }
+        market.currMargin = perpmr.toNumber()
     }
 
 async BKPratchedMaxLeverageTriggerCheck(market: Market) {

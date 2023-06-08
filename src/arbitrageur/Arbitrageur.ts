@@ -928,8 +928,10 @@ async getPosVal(leg: Market): Promise<Number> {
     }
     // gas overrides
     const overrides = {
-        gasLimit: 5000000,
-        gasPrice: ethers.utils.parseUnits('0.00000095', 'gwei'),
+        gasLimit: 3000000,
+//        gasPrice: ethers.utils.parseUnits('0.00000095', 'gwei'),
+        maxFeePerGas: ethers.utils.parseUnits("1", "gwei"),
+        maxPriorityFeePerGas: ethers.utils.parseUnits("0.002", "gwei")
       };
 
     try {

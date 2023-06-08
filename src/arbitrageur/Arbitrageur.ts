@@ -926,14 +926,20 @@ async getPosVal(leg: Market): Promise<Number> {
         console.log("DEBUG: open: " + mkt.name + " " + usdAmount)
         return
     }
+    // gas overrides
+    const overrides = {
+        gasLimit: 5000000,
+        gasPrice: ethers.utils.parseUnits('0.000000065', 'gwei'),
+      };
+
     try {
-        await this.openPosition(mkt.wallet, mkt.baseToken ,mkt.side ,AmountType.QUOTE,Big(usdAmount),undefined,undefined,undefined)
+        await this.openPosition(mkt.wallet, mkt.baseToken ,mkt.side ,AmountType.QUOTE,Big(usdAmount),overrides,undefined,undefined)
      }
     catch (e: any) {
         console.error(mkt.name + ` ERROR: FAILED OPEN. Rotating endpoint: ${e.toString()}`)
         this.ethService.rotateToNextEndpoint()
         try {
-            await this.openPosition(mkt.wallet,mkt.baseToken,mkt.side,AmountType.QUOTE, Big(usdAmount),undefined,undefined,undefined)
+            await this.openPosition(mkt.wallet,mkt.baseToken,mkt.side,AmountType.QUOTE, Big(usdAmount),overrides,undefined,undefined)
             console.log(Date.now() + " " + mkt.name + " INFO: Re-opened...")
         } catch (e: any) {
             console.error(mkt.name + `: ERROR: FAILED SECOND OPEN: ${e.toString()}`)

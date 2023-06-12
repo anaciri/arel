@@ -26,6 +26,14 @@ import { dbgnow } from "../dbg/crocDebug"
 import { parse } from 'csv-parse';
 import { getHeapSnapshot } from "v8"
 import { readFileSync } from 'fs';
+const TP_GAS_PX_GWEI = "0.5"
+
+const broverrides = {
+    gasLimit: 2000000,
+//        gasPrice: ethers.utils.parseUnits('0.00000095', 'gwei'),
+    maxFeePerGas: ethers.utils.parseUnits(TP_GAS_PX_GWEI, "gwei"),
+    maxPriorityFeePerGas: ethers.utils.parseUnits("0.002", "gwei")
+  };
 
 interface MarketConfig {
     IS_ENABLED: boolean;
@@ -926,22 +934,23 @@ async getPosVal(leg: Market): Promise<Number> {
         console.log("DEBUG: open: " + mkt.name + " " + usdAmount)
         return
     }
-    // gas overrides
+    // bedrock gas overrides
+    /*
     const overrides = {
         gasLimit: 3000000,
 //        gasPrice: ethers.utils.parseUnits('0.00000095', 'gwei'),
         maxFeePerGas: ethers.utils.parseUnits("1", "gwei"),
         maxPriorityFeePerGas: ethers.utils.parseUnits("0.002", "gwei")
-      };
+      };*/
 
     try {
-        await this.openPosition(mkt.wallet, mkt.baseToken ,mkt.side ,AmountType.QUOTE,Big(usdAmount),overrides,undefined,undefined)
+        await this.openPosition(mkt.wallet, mkt.baseToken ,mkt.side ,AmountType.QUOTE,Big(usdAmount),broverrides,undefined,undefined)
      }
     catch (e: any) {
         console.error(mkt.name + ` ERROR: FAILED OPEN. Rotating endpoint: ${e.toString()}`)
         this.ethService.rotateToNextEndpoint()
         try {
-            await this.openPosition(mkt.wallet,mkt.baseToken,mkt.side,AmountType.QUOTE, Big(usdAmount),overrides,undefined,undefined)
+            await this.openPosition(mkt.wallet,mkt.baseToken,mkt.side,AmountType.QUOTE, Big(usdAmount),broverrides,undefined,undefined)
             console.log(Date.now() + " " + mkt.name + " INFO: Re-opened...")
         } catch (e: any) {
             console.error(mkt.name + `: ERROR: FAILED SECOND OPEN: ${e.toString()}`)
@@ -1010,7 +1019,7 @@ computeWeightedArithAvrg(cticks: TickData[], cweights: number[]): number {
         return
     }
     try {
-        await this.closePosition(mkt.wallet, mkt.baseToken, undefined,undefined,undefined)
+        await this.closePosition(mkt.wallet, mkt.baseToken, broverrides,undefined,undefined)
         //bookeeping: upd startCollateral to settled and save old one in basisCollateral
         let scoll = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
         mkt.idxBasisCollateral = scoll
@@ -1027,7 +1036,7 @@ computeWeightedArithAvrg(cticks: TickData[], cweights: number[]): number {
             console.log(mkt.name + ` ERROR: FAILED CLOSE ${mkt.name} Rotating endpoint: ${e.toString()}`)
             this.ethService.rotateToNextEndpoint()
             // one last try....
-            await this.closePosition(mkt.wallet, mkt.baseToken, undefined,undefined,undefined)
+            await this.closePosition(mkt.wallet, mkt.baseToken, broverrides,undefined,undefined)
             console.log(Date.now() + " SETUP: Recovery closed after rotation")
             throw e  
     }

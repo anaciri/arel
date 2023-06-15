@@ -2036,13 +2036,17 @@ async ensureSwapListenersOK(): Promise<void> {
   async setGasPx() {
     // initialize to use the fixed valued  only if is IS_DYNAMIC_GAS_PX, DYNAMIC_PX_MULTIP
     broverrides.maxFeePerGas = ethers.utils.parseUnits(config.MAX_FEE_PER_GAS_GWEI.toString(), "gwei")
+    broverrides.maxPriorityFeePerGas = ethers.utils.parseUnits(config.MAX_TIP_GAS_GWEI.toString(), "gwei")
 
     if (config.USE_DYNAMIC_GAS_PX == true) {
         const feedata = await this.ethService.provider.getFeeData() 
-        if( feedata.lastBaseFeePerGas ) // if null, use the fixed value
+        if( feedata.lastBaseFeePerGas && feedata.maxPriorityFeePerGas) // if null, use the fixed value
         {
-            const multiplier = ethers.utils.parseUnits(config.DYNAMIC_GAS_PX_MULTIPLIER.toString(), 2)
-            broverrides.maxFeePerGas = feedata.lastBaseFeePerGas.mul(multiplier)
+            //const multiplier = ethers.utils.parseUnits(config.DYNAMIC_GAS_PX_MULTIPLIER.toString(), 2)
+            const multiplier = config.DYNAMIC_GAS_PX_MULTIPLIER
+            const tip = broverrides.maxPriorityFeePerGas
+            // ensure the priority fee is not higher than the max fee else u get 3200 error
+            broverrides.maxFeePerGas = feedata.lastBaseFeePerGas.mul(multiplier).add(tip)
         }
     }
   }

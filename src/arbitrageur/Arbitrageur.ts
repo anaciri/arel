@@ -2058,13 +2058,9 @@ async ensureSwapListenersOK(): Promise<void> {
     //TODO.BIZCONT redo ensureSwapListenersOK, it will always return listerneCounter of zero coz new instance
     //await this.ensureSwapListenersOK()
     // new cycle. update cycle deltas based on what events have been received since last cycle
-    // check gas levels
-    //----- factor as checkGasPx if IS_GAS_PX_FIXED
-    let IS_GAS_PX_FIXED = false
-    if (IS_GAS_PX_FIXED == false) {
-        this.setGasPx()
-    }
-   
+    this.processEventInputs()
+    // adjust gas price
+    this.setGasPx()
 
     // now that cycle events delta. first things first.check for TP_MAX_LOSS
     if ( await this.maxLossCheckAndStateUpd(market) ) {   // have a positive => close took place. check for qrom crossing

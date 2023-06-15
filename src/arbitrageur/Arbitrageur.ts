@@ -26,12 +26,12 @@ import { dbgnow } from "../dbg/crocDebug"
 import { parse } from 'csv-parse';
 import { getHeapSnapshot } from "v8"
 import { readFileSync } from 'fs';
-const TP_GAS_PX_GWEI = "0.5"
+// this value will be overitten in setGasPx
+const INITIAL_MAX_GAS_GWEI = "1"
 
 const broverrides = {
     gasLimit: 2000000,
-//        gasPrice: ethers.utils.parseUnits('0.00000095', 'gwei'),
-    maxFeePerGas: ethers.utils.parseUnits(TP_GAS_PX_GWEI, "gwei"),
+    maxFeePerGas: ethers.utils.parseUnits(INITIAL_MAX_GAS_GWEI, "gwei"),
     maxPriorityFeePerGas: ethers.utils.parseUnits("0.002", "gwei")
   };
 
@@ -307,6 +307,7 @@ export class Arbitrageur extends BotService {
         const toEndpoint = this.evtSubProviderEndpoints[this.evtSubEndpointsIndex];
 
         const nextProvider = this.evtProviders[this.evtSubEndpointsIndex];
+        
         // Add close/desconnect websocke event listeners if wss
         if (nextProvider instanceof ethers.providers.WebSocketProvider) {
           nextProvider._websocket.on('close', () => {
@@ -983,6 +984,7 @@ async getPosVal(leg: Market): Promise<Number> {
  BKProtateToNextProvider() {
     // upon running eth.rotateToNextEndpoint. listeners are lost. need to re-register against new provider in ethService
     this.ethService.rotateToNextEndpoint()
+    
     this.setupPoolListeners()
     //let tmstmp = new Date().toLocaleTimeString([], {hour12: false, timeZone: 'America/New_York'});
     console.log(Date.now() + " SETUP: rereg listeners: " + this.ethService.provider.connection.url)
@@ -2031,6 +2033,20 @@ async ensureSwapListenersOK(): Promise<void> {
     }
   }
   
+  async setGasPx() {
+    // initialize to use the fixed valued  only if is IS_DYNAMIC_GAS_PX, DYNAMIC_PX_MULTIP
+    broverrides.maxFeePerGas = ethers.utils.parseUnits(config.MAX_FEE_PER_GAS_GWEI.toString(), "gwei")
+
+    if (config.USE_DYNAMIC_GAS_PX == true) {
+        const feedata = await this.ethService.provider.getFeeData() 
+        if( feedata.lastBaseFeePerGas ) // if null, use the fixed value
+        {
+            const multiplier = ethers.utils.parseUnits(config.DYNAMIC_GAS_PX_MULTIPLIER.toString(), 2)
+            broverrides.maxFeePerGas = feedata.lastBaseFeePerGas.mul(multiplier)
+        }
+    }
+  }
+
 //  mainRoutine
 // TODO: OPTIMIZE: batch all checks for all legs. can avoid unnecessary checks e.g if SHORT leg above threshold twin will not
 //--------------------------------------------------------------------------------------
@@ -2038,7 +2054,14 @@ async ensureSwapListenersOK(): Promise<void> {
     //TODO.BIZCONT redo ensureSwapListenersOK, it will always return listerneCounter of zero coz new instance
     //await this.ensureSwapListenersOK()
     // new cycle. update cycle deltas based on what events have been received since last cycle
-    this.processEventInputs()
+    // check gas levels
+    //----- factor as checkGasPx if IS_GAS_PX_FIXED
+    let IS_GAS_PX_FIXED = false
+    if (IS_GAS_PX_FIXED == false) {
+        this.setGasPx()
+    }
+   
+
     // now that cycle events delta. first things first.check for TP_MAX_LOSS
     if ( await this.maxLossCheckAndStateUpd(market) ) {   // have a positive => close took place. check for qrom crossing
         await this.putMktToSleep(market)

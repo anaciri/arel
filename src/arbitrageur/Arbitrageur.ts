@@ -1838,7 +1838,8 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
             // decrease leverage/increase margin by step up to CAP and then close
             try {  
                 await this.close(market) 
-                console.log(Date.now() + " INFO: CLOSE mrlimit " + market.name + " mr: " + perpmr.toFixed(4) )
+                console.log(Date.now() + " INFO: CLOSE mrlimit " + market.name + " mr: " + perpmr.toFixed(4) +
+                            " scoll: " + market.startCollateral )
             }  
             catch { 
                 console.log(Date.now() + "minMargin Failed Closed,  " +  market.name ) }

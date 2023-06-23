@@ -1843,18 +1843,19 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
             }  
             catch { 
                 console.log(Date.now() + "minMargin Failed Closed,  " +  market.name ) }
-            // reset margin limits to start reset margin
+            // bump up reset margin and upd margin limits limits to start
             const MOVEME_MAX_MARGIN = 1
             const MOVEME_MIN_MARGIN = 0.08
-            market.minMarginRatio = Math.max(market.resetMargin - config.TP_MARGIN_STEP_INC, MOVEME_MIN_MARGIN)
+            // increase min margin to current reset margin and update limits
+            market.minMarginRatio = market.resetMargin
+            market.resetMargin = Math.min(market.resetMargin + config.TP_MARGIN_STEP_INC, MOVEME_MAX_MARGIN)
+            //market.minMarginRatio = Math.max(market.resetMargin - config.TP_MARGIN_STEP_INC, MOVEME_MIN_MARGIN)
             // update also the maxMargin 
             market.maxMarginRatio = Math.min(market.resetMargin + config.TP_MARGIN_STEP_INC, MOVEME_MAX_MARGIN)
             // no need to worry about start collateral this gets update on close
             // update reset margin on step above minimum
             //market.resetMargin = Math.min(market.minMarginRatio + config.TP_MARGIN_STEP_INC, MOVEME_MAX_MARGIN)
-            
         }
-
         market.currMargin = perpmr.toNumber()
     }
 

@@ -1630,6 +1630,9 @@ async putMktToSleep(mkt: Market) {
             let settledCol = mkt.startCollateral //updated in this.close
             let ret = 1 + (settledCol-oldStartCol)/oldStartCol
             let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
+            // bump up reset margin
+            const MOVEME_MAX_MARGIN = 0.999
+            mkt.resetMargin = Math.min(mkt.resetMargin + config.TP_MARGIN_STEP_INC, MOVEME_MAX_MARGIN)
     console.log(tstmp + ": INFO: Kill " + mkt.name + ", stldcoll: " + settledCol.toFixed(4) + " rret: " + ret.toFixed(2))
 }
 
@@ -1780,7 +1783,7 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
   }
 
   // chain scale reaction i.e scale causing additional scaleing
-  async marginLimitsCheck(market: Market) {
+  async UNDOratchedMaxLeverageTriggerCheck(market: Market) {
     const MAX_LEVERAGE = 10  //haircust will be applied
         if ( !(await this.isNonZeroPos(market)) ) {return}
     //TODO.OPTIMIZE remove perpnl not used
@@ -1859,7 +1862,7 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
         market.currMargin = perpmr.toNumber()
     }
 
-    async BKPratchedMaxLeverageTriggerCheck(market: Market) {
+    async ratchedMaxLeverageTriggerCheck(market: Market) {
         const MAX_LEVERAGE = 10  //haircust will be applied
             if ( !(await this.isNonZeroPos(market)) ) {return}
         //TODO.OPTIMIZE remove perpnl not used
@@ -2101,7 +2104,7 @@ async ensureSwapListenersOK(): Promise<void> {
     //this.checkOnPoolSubEmptyBucket() //<========================== poolSubChecknPullBucket
 //-------this.mktDirectionChangeCheck()  // asses direction. WAKEUP deps on this
       // MMR. maximum margin RESET check
-    await this.marginLimitsCheck(market) 
+    await this.ratchedMaxLeverageTriggerCheck(market) 
     //await this.maxMaxMarginRatioCheck(market)
     await this.wakeUpCheck(market) //wakeup only favored leg if sided mkt else both
 

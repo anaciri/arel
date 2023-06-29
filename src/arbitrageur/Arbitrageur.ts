@@ -1632,8 +1632,11 @@ async putMktToSleep(mkt: Market) {
             let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
             // bump up reset margin
             const MOVEME_MAX_MARGIN = 0.999
-            mkt.resetMargin = Math.min(mkt.resetMargin + config.TP_MARGIN_STEP_INC, MOVEME_MAX_MARGIN)
-    console.log(tstmp + ": INFO: Kill " + mkt.name + ", stldcoll: " + settledCol.toFixed(4) + " rret: " + ret.toFixed(2))
+            const MOVEME_FACTORY_RESET_MARGIN = 0.45
+            mkt.resetMargin = MOVEME_FACTORY_RESET_MARGIN
+            mkt.maxMarginRatio = mkt.resetMargin + config.TP_MARGIN_STEP_INC
+            //mkt.resetMargin = Math.min(mkt.resetMargin + config.TP_MARGIN_STEP_INC, MOVEME_MAX_MARGIN)
+    console.log(tstmp + ": INFO: Kill " + mkt.name + ", stldcoll: " + settledCol.toFixed(4) + " oldcoll: " + oldStartCol.toFixed(4))
 }
 
 async holosCheck() :Promise<boolean> {
@@ -1888,7 +1891,7 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
                                                      : (await this.getOpenLegUrets()).uretShorts
                 // do i have qrom of already same-side-opened profitable positions to fastract?
                 if (urets.filter((uret) => uret > config.TP_QRM_MIN_RET).length >= config.TP_QRM_FOR_MAX_LEVERAGE) { 
-                    console.log(Date.now() + " INFO: SCALE 2 MAXMR " + market.name + " mr: ")
+                    console.log(Date.now() + " INFO: SCALE 2 MAXMR " + market.name + " mr: " + market.currMargin.toFixed(4))
                     scale = MAX_LEVERAGE }
                 /*else { //snap, just the step increment
                     let newmr = Math.max(market.basisMargin - config.TP_MARGIN_STEP_INC, 1/MAX_LEVERAGE)

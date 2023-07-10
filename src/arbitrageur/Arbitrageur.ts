@@ -146,17 +146,23 @@ type BaseTokenAddr = string
 type EthersWallet = ethers.Wallet
 type closeFuncType = (arg1: EthersWallet, arg2: BaseTokenAddr) => Promise<void>
 
-
-enum Direction {
+// REMOVE??
+enum DeprecateDirection {
     ZEBRA = "zebra",
     TORO = "toro",
     BEAR = "bear"
 }
 
+enum Direction {
+    NEUTRAL = 'neutral',
+    CAPIN = "capin",   // Capital (USD) inflows/ Base token reserve outflow/ Asset appretiation
+    CAPOUT = "capout"
+}
+
 type TickRecord = {
-    timestamp: number
+timestamp: number
     tick: number
-  };
+}
 
 type CumulativeTick = {
     refCumTickTimestamp: number;
@@ -274,8 +280,9 @@ export class Arbitrageur extends BotService {
     private pkMap = new Map<string, string>()
     private marketMap: { [key: string]: Market } = {}
     private readonly arbitrageMaxGasFeeEth = Big(config.ARBITRAGE_MAX_GAS_FEE_ETH)
-    private holosSide: Direction = Direction.ZEBRA
-    private prevHolsSide: Direction = Direction.ZEBRA
+    private holosSide: DeprecateDirection = DeprecateDirection.ZEBRA
+    private prevHolsSide: DeprecateDirection = DeprecateDirection.ZEBRA
+    private capflow: Direction = Direction.NEUTRAL
     private poolState: { [keys: string]: PoolState } = {}
     private tickBuff: { [ticker: string]: PoolData } = {} // TO DEPRECATE
 
@@ -291,6 +298,10 @@ export class Arbitrageur extends BotService {
     //convinienc list of enbled market
     enabledMarkets: string[] =[]
     enabledLegs: string[] =[]
+    // bearCount + bullCount  <  enabledMarkets
+    //corrBullCount: number = 0
+    //corrBearCount: number = 0
+    
     
     evtRotateProvider() {
         // Get the current provider and remove its event listeners
@@ -891,11 +902,11 @@ if( config.TRACE_FLAG) { console.log(now + " EVTSUB: " + tkr + " membuff.sz: " +
     // compute the weighted arithmetic mean for the last thirty minutes
     const buffvals = Object.values(lastThirtyMinutesData);
     const bweights = buffvals.map((tick, i) => i + 1);
-    const tickBasis = this.computeWeightedArithAvrg(buffvals, bweights);
-if( config.TRACE_FLAG) { console.log(now + " EVTSUB: " + tkr + " wcycleTicks: " + wtick.toFixed() + " tickBasis: " + tickBasis.toFixed()) }
+    const tick30MinWAvgAsBasis = this.computeWeightedArithAvrg(buffvals, bweights);
+if( config.TRACE_FLAG) { console.log(now + " EVTSUB: " + tkr + " wcycleTicks: " + wtick.toFixed() + " tickBasis: " + tick30MinWAvgAsBasis.toFixed()) }
 
     // update cycleDelta for each pool. consumed by mktDirection and soon maxloss
-    this.poolState[tkr].cycleTickDelta = wtick - tickBasis;
+    this.poolState[tkr].cycleTickDelta = wtick - tick30MinWAvgAsBasis;
     this.poolState[tkr].cycleTickDeltaTs = cyclevals[cyclevals.length-1].timestamp
 //if( config.TRACE_FLAG) { console.log(now + " TRACE: " + tkr + " cTkDelta: " + this.poolState[tkr].cycleTickDelta.toFixed()) }
     console.log( Date.now() + " EVTSUB: " + tkr + ": cycleTickDelta: " + this.poolState[tkr].cycleTickDelta.toFixed(2) )
@@ -920,6 +931,48 @@ if( config.TRACE_FLAG) { console.log(now + " EVTSUB: " + tkr + " wcycleTicks: " 
     fs.appendFile('tickdelt.csv', csvString, (err) => { if (err) throw err });
     }
 }
+
+// correleation index is ratio of count of long tickers with tickdleta above a min to short tickers with min value
+// for 6 tickers. min value is 0/6 and increase 1/5, 2/4, 3/3, .... 6/0 = inf for inf will use 999 for non-abplicable -1
+// initial state 0/0 there is no index
+
+// perp uses swap in/swap out to determine if in a crash base token is being swaped in (and usd removed) ie CAPOUT
+// or in a bull swap out i.e CAPIN
+capitalFlowCheck(): void {
+    // start with state NEUTRAL
+    this.capflow = Direction.NEUTRAL
+
+    const positiveDeltas: { key: string; cycleTs: Timestamp; cycleTickDelta: number }[] = [];
+    const negativeDeltas: { key: string; cycleTs: Timestamp; cycleTickDelta: number }[] = [];
+
+    for (const key in this.poolState) {
+        const pool = this.poolState[key];
+        if (pool.cycleTickDelta > config.TP_DIR_MIN_TICK_DELTA) {
+            positiveDeltas.push({ key, cycleTs: pool.cycleTickDeltaTs, cycleTickDelta: pool.cycleTickDelta})
+        if (pool.cycleTickDelta < -config.TP_DIR_MIN_TICK_DELTA) {
+                negativeDeltas.push({ key, cycleTs: pool.cycleTickDeltaTs, cycleTickDelta: pool.cycleTickDelta})}
+        }
+    }
+
+    if (positiveDeltas.length >= config.MIN_CONFIRMING_OBSERVATIONS && negativeDeltas.length <= config.MAX_REFUTING_OBSERVATIONS) {
+        this.capflow = Direction.CAPIN
+        for (const delta of positiveDeltas) {
+            const dump = this.evtBuffer[delta.key].getAll();
+            console.log(`${new Date()} DUMP ${delta.key}:`, dump);
+        }
+    }
+
+    if (negativeDeltas.length >= config.MIN_CONFIRMING_OBSERVATIONS && positiveDeltas.length <= config.MAX_REFUTING_OBSERVATIONS) {
+        this.capflow = Direction.CAPOUT
+        for (const delta of positiveDeltas) {
+            const dump = this.evtBuffer[delta.key].getAll();
+            console.log(`${new Date()} DUMP ${delta.key}:`, dump);
+        }
+    }
+}
+
+
+
 
 async getPosVal(leg: Market): Promise<Number> {
     let pv =  (await this.perpService.getTotalPositionValue(leg.wallet.address, leg.baseToken)).toNumber()
@@ -1150,10 +1203,10 @@ mktDirectionChangeCheck(): void {
 if (config.TRACE_FLAG) { console.log(Date.now() + " TRACE: mktDir: " + btcDelta.toFixed() + ", " + ethDelta.toFixed() + ", " + bnbDelta.toFixed()) }
     let jmps = deltas.filter(delta => Math.abs(delta) > config.TP_DIR_MIN_TICK_DELTA)
     // zebra until proven different  
-    this.holosSide = Direction.ZEBRA
+    this.holosSide = DeprecateDirection.ZEBRA
     // HACK: if 2 out of 3 deltas > config.TP_DIR_MIN_TICK_DELTA AND same sign then we have conviction
-    if (jmps.length > 1 && jmps.every(delta => delta > 0)) { this.holosSide = Direction.TORO } 
-    else if (jmps.length > 1 && jmps.every(delta => delta < 0)) { this.holosSide = Direction.BEAR }
+    if (jmps.length > 1 && jmps.every(delta => delta > 0)) { this.holosSide = DeprecateDirection.TORO } 
+    else if (jmps.length > 1 && jmps.every(delta => delta < 0)) { this.holosSide = DeprecateDirection.BEAR }
     
     if( btcDelta || ethDelta || bnbDelta) { 
         console.log(Date.now() + " MKT: " + this.holosSide + ":" + btcDelta.toFixed() + ", " + ethDelta.toFixed() + ", " + bnbDelta.toFixed())
@@ -1234,9 +1287,12 @@ if (config.TRACE_FLAG) { console.log(now + " TRACE: wakeUpCheck: " + mkt.tkr + "
 if (config.TRACE_FLAG) { console.log(new Date().toLocaleString() + " TRACE: wakeUpCheck: " + mkt.tkr + " tkdlt: " + tickDelta.toFixed()) }
 
     if (Math.abs(tickDelta) < mkt.longEntryTickDelta) { return false }
+    // wakeup only if ge CORR_MIN_COUNT default half of enabled markets + 1. should always be gt half otherwise dont make sense to say 
+    // the market is swapping in our out direction
+    // CORR_COUNTS MUST be > half of all markets
+    if ( this.capflow == Direction.NEUTRAL) { return false }
     
   // wake up long/sThort on tick inc
-    //let dir = this.holosSide
     if ( (mkt.side == Side.LONG) && (tickDelta > mkt.longEntryTickDelta) ) {
         let pos = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
         
@@ -1255,7 +1311,7 @@ if (config.TRACE_FLAG) { console.log(new Date().toLocaleString() + " TRACE: wake
                  }*/
             
                 try { await this.open(mkt,sz) }
-                catch(err) { console.error(Date.now() + mkt.tkr +  " OPEN FAILED in wakeUpCheck") }
+                catch(err) { console.error(Date.now() + mkt.name +  " OPEN FAILED in wakeUpCheck") }
 
                 let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
                 console.log(tstmp + " INFO: WAKEUP:" + mkt.name + " Dt:" + tickDelta.toFixed(4))
@@ -1280,7 +1336,7 @@ if (config.TRACE_FLAG) { console.log(new Date().toLocaleString() + " TRACE: wake
             let sz = mkt.startCollateral / mkt.resetMargin
        
             try { await this.open(mkt,sz) }
-            catch(err) { console.error(Date.now() + mkt.tkr +  " OPEN FAILED in wakeUpCheck") }
+            catch(err) { console.error(Date.now() + mkt.name +  " OPEN FAILED in wakeUpCheck") }
 
             let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
             console.log(tstmp + " INFO: WAKEUP:" + mkt.name + " Dt:" + tickDelta.toFixed(4) )
@@ -1304,7 +1360,7 @@ if (config.TRACE_FLAG) { console.log(now + " TRACE: wakeUpCheck: " + mkt.tkr + "
     
   // wake up long/sThort on tick inc
     let dir = this.holosSide
-    if ( (mkt.side == Side.LONG) && (tickDelta > mkt.longEntryTickDelta) && (dir == Direction.TORO) ) {
+    if ( (mkt.side == Side.LONG) && (tickDelta > mkt.longEntryTickDelta) && (dir == DeprecateDirection.TORO) ) {
         let pos = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
         let sz = mkt.startCollateral / mkt.resetMargin
         try { 
@@ -1315,11 +1371,11 @@ if (config.TRACE_FLAG) { console.log(now + " TRACE: wakeUpCheck: " + mkt.tkr + "
                 return true
              } 
         }
-        catch(err) { console.error(Date.now() + mkt.tkr +  " OPEN FAILED in wakeUpCheck") }
+        catch(err) { console.error(Date.now() + mkt.name +  " OPEN FAILED in wakeUpCheck") }
     }
     else if ( (mkt.side == Side.SHORT) && (tickDelta < 0)
                                        && (Math.abs(tickDelta) > mkt.shortEntryTickDelta) 
-                                       && (dir == Direction.BEAR)) {
+                                       && (dir == DeprecateDirection.BEAR)) {
         let pos = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
         let sz = mkt.startCollateral / mkt.resetMargin
         try {
@@ -1330,7 +1386,7 @@ if (config.TRACE_FLAG) { console.log(now + " TRACE: wakeUpCheck: " + mkt.tkr + "
                 return true
             }
         }
-        catch(err) { console.error(Date.now() + mkt.tkr +  " OPEN FAILED in wakeUpCheck") }
+        catch(err) { console.error(Date.now() + mkt.name +  " OPEN FAILED in wakeUpCheck") }
     }
 
     if (tickDelta) {
@@ -1873,13 +1929,14 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
             let perpmr = await this.perpService.getMarginRatio(market.wallet.address)
             if (!perpmr) {  throw new Error(market.name + " FAIL: pmr null in maxMaxMarginRatioCheck")}
     
+            let freec = (await this.perpService.getFreeCollateral(market.wallet.address)).toNumber()
             if (config.TRACE_FLAG) { console.log("TRACE: " + market.name + " perpmr:" + perpmr.toFixed(4) 
-                                        +  " maxmr:" + market.maxMarginRatio.toFixed(4) 
+                                        +  " maxmr:" + market.maxMarginRatio.toFixed(4) +  " freec:" + freec.toFixed(4) 
                                         +  " mrp: " + (10000*(market.maxMarginRatio - perpmr.toNumber())).toFixed() ) }
             //TODO.OPTIMIZE: if (perppnl < 0 ) { return }
-        
-            let freec = (await this.perpService.getFreeCollateral(market.wallet.address)).toNumber()
             if (freec < config.TP_MIN_FREE_COLLATERAL ) { return }
+            // we only scale if one sided market to avoid drift scaling 
+            if (this.capflow == Direction.NEUTRAL)  { return }
         
             // check if crossed threshold. two tracks regular track LEV_INC or fastrack to MAX_LEVERAGE
             if ( perpmr.toNumber() > market.maxMarginRatio ) {
@@ -2095,6 +2152,8 @@ async ensureSwapListenersOK(): Promise<void> {
     //await this.ensureSwapListenersOK()
     // new cycle. update cycle deltas based on what events have been received since last cycle
     this.processEventInputs()
+    this.capitalFlowCheck()
+    //this.computeCorrIndex()
     // adjust gas price
     this.setGasPx()
 
@@ -2153,13 +2212,13 @@ async ensureSwapListenersOK(): Promise<void> {
           let count = Object.keys(this.poolState).length
           if ((posPools.length / count > config.TP_QRM_DIR_CHANGE_MIN_PCT)  && 
               (negPools.length / count < config.TP_QRM_DIR_CHANGE_MIN_PCT)) {
-                currDir = Direction.TORO;
+                currDir = DeprecateDirection.TORO;
           } 
           if ((negPools.length / count > config.TP_QRM_DIR_CHANGE_MIN_PCT)  && 
               (posPools.length / count < config.TP_QRM_DIR_CHANGE_MIN_PCT)) {
-                currDir = Direction.BEAR;
+                currDir = DeprecateDirection.BEAR;
           } 
-          if ((this.prevHolsSide !== currDir) && (currDir === Direction.TORO || currDir === Direction.BEAR)) {
+          if ((this.prevHolsSide !== currDir) && (currDir === DeprecateDirection.TORO || currDir === DeprecateDirection.BEAR)) {
             // update direction and return true
             this.prevHolsSide = this.holosSide //save before overwrite
             this.holosSide = currDir

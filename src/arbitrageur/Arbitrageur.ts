@@ -957,21 +957,19 @@ capitalFlowCheck(): void {
     if (positiveDeltas.length >= config.MIN_CONFIRMING_OBSERVATIONS && negativeDeltas.length <= config.MAX_REFUTING_OBSERVATIONS) {
         this.capflow = Direction.CAPIN
         for (const delta of positiveDeltas) {
-            const dump = this.evtBuffer[delta.key].getAll();
-            console.log(`${new Date()} DUMP ${delta.key}:`, dump);
+            //const dump = this.evtBuffer[delta.key].getAll();
+            console.log(`${Date.now()} DUMP CAPIN`);
         }
     }
 
     if (negativeDeltas.length >= config.MIN_CONFIRMING_OBSERVATIONS && positiveDeltas.length <= config.MAX_REFUTING_OBSERVATIONS) {
         this.capflow = Direction.CAPOUT
         for (const delta of positiveDeltas) {
-            const dump = this.evtBuffer[delta.key].getAll();
-            console.log(`${new Date()} DUMP ${delta.key}:`, dump);
+            //onst dump = this.evtBuffer[delta.key].getAll();
+            console.log(`${Date.now()} DUMP CAPOUT`);
         }
     }
 }
-
-
 
 
 async getPosVal(leg: Market): Promise<Number> {

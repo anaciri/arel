@@ -1298,7 +1298,8 @@ if (config.TRACE_FLAG) { console.log(new Date().toLocaleString() + " TRACE: wake
         if(!pos) { 
                 // compute factors
                 //let lkf = (await this.computeKellyFactors()).longKellyFactor
-                let sz = mkt.startCollateral / mkt.resetMargin
+                //let sz = mkt.startCollateral / mkt.resetMargin
+                let sz = Math.min(mkt.startCollateral / mkt.resetMargin, config.TP_MAX_OPEN_SZ_USD)
                 /*
                 let sz = mkt.startCollateral*lkf*MAX_LEVERAGE 
                 if (!lkf) { 
@@ -1312,7 +1313,7 @@ if (config.TRACE_FLAG) { console.log(new Date().toLocaleString() + " TRACE: wake
                 catch(err) { console.error(Date.now() + mkt.name +  " OPEN FAILED in wakeUpCheck") }
 
                 let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
-                console.log(tstmp + " INFO: WAKEUP:" + mkt.name + " Dt:" + tickDelta.toFixed(4))
+                console.log(tstmp + " INFO: WAKEUP:" + mkt.name + " Dt:" + tickDelta.toFixed(4) + "usdamnt: " + sz.toFixed())
                 return true
         }
     }
@@ -1338,7 +1339,7 @@ if (config.TRACE_FLAG) { console.log(new Date().toLocaleString() + " TRACE: wake
             catch(err) { console.error(Date.now() + mkt.name +  " OPEN FAILED in wakeUpCheck") }
 
             let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
-            console.log(tstmp + " INFO: WAKEUP:" + mkt.name + " Dt:" + tickDelta.toFixed(4) )
+            console.log(tstmp + " INFO: WAKEUP:" + mkt.name + " Dt:" + tickDelta.toFixed(4) + "usdamnt: " + sz.toFixed())
             return true
         }
     }
@@ -1877,7 +1878,10 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
             let usdAmount = freec*scale*config.TP_EXECUTION_HAIRCUT
             // check size to avoid runaway-chainre inhibitor EX_OPLAS. Todo change to
             //let usdAmount = Math.min(freec*scale*config.TP_EXECUTION_HAIRCUT, config.TP_MAX_OPEN_SZ_USD) AND dont step increase
-            if (usdAmount > config.TP_MAX_OPEN_SZ_USD) { usdAmount = config.TP_MAX_OPEN_SZ_USD }
+            if (usdAmount > config.TP_MAX_OPEN_SZ_USD) { 
+                usdAmount = config.TP_MAX_OPEN_SZ_USD
+                console.log(Date.now() + " INFO: " + market.name + "MAX_USD_SZ: " + usdAmount  )
+             }
             try {  
                 await this.open(market, usdAmount) 
                 console.log(Date.now() + " INFO: SCALE " + market.name + " mr: " + perpmr.toFixed(4) +  

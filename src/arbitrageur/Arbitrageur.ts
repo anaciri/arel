@@ -283,6 +283,7 @@ export class Arbitrageur extends BotService {
     private holosSide: DeprecateDirection = DeprecateDirection.ZEBRA
     private prevHolsSide: DeprecateDirection = DeprecateDirection.ZEBRA
     private capflow: Direction = Direction.NEUTRAL
+    private lastCapflow: Direction = Direction.NEUTRAL
     private poolState: { [keys: string]: PoolState } = {}
     private tickBuff: { [ticker: string]: PoolData } = {} // TO DEPRECATE
 
@@ -298,6 +299,7 @@ export class Arbitrageur extends BotService {
     //convinienc list of enbled market
     enabledMarkets: string[] =[]
     enabledLegs: string[] =[]
+    
     // bearCount + bullCount  <  enabledMarkets
     //corrBullCount: number = 0
     //corrBearCount: number = 0
@@ -949,25 +951,55 @@ capitalFlowCheck(): void {
         const pool = this.poolState[key];
         if (pool.cycleTickDelta > config.TP_DIR_MIN_TICK_DELTA) {
             positiveDeltas.push({ key, cycleTs: pool.cycleTickDeltaTs, cycleTickDelta: pool.cycleTickDelta})
+        }
         if (pool.cycleTickDelta < -config.TP_DIR_MIN_TICK_DELTA) {
-                negativeDeltas.push({ key, cycleTs: pool.cycleTickDeltaTs, cycleTickDelta: pool.cycleTickDelta})}
+            negativeDeltas.push({ key, cycleTs: pool.cycleTickDeltaTs, cycleTickDelta: pool.cycleTickDelta})
         }
     }
 
-    if (positiveDeltas.length >= config.MIN_CONFIRMING_OBSERVATIONS && negativeDeltas.length <= config.MAX_REFUTING_OBSERVATIONS) {
+    if ((positiveDeltas.length >= config.MIN_CONFIRMING_OBSERVATIONS) && (negativeDeltas.length <= config.MAX_REFUTING_OBSERVATIONS) ) {
         this.capflow = Direction.CAPIN
+        /*
         for (const delta of positiveDeltas) {
-            //const dump = this.evtBuffer[delta.key].getAll();
-            console.log(`${Date.now()} DUMP CAPIN`);
-        }
+            //console.log(`${Date.now()} DUMP CAPIN`);
+        }*/
     }
 
-    if (negativeDeltas.length >= config.MIN_CONFIRMING_OBSERVATIONS && positiveDeltas.length <= config.MAX_REFUTING_OBSERVATIONS) {
+    if ((negativeDeltas.length >= config.MIN_CONFIRMING_OBSERVATIONS) && (positiveDeltas.length <= config.MAX_REFUTING_OBSERVATIONS) ){
         this.capflow = Direction.CAPOUT
+        /*
         for (const delta of positiveDeltas) {
-            //onst dump = this.evtBuffer[delta.key].getAll();
-            console.log(`${Date.now()} DUMP CAPOUT`);
+            //console.log(`${Date.now()} DUMP CAPOUT`);
+        }*/
+    }
+
+    // print ts, direction, only if change of direction and dump top/bottom deltas
+    //if (this.capflow == Direction.NEUTRAL) { this.lastCapflow = Direction.NEUTRAL; return} // boring nothing happening
+    if (this.capflow != this.lastCapflow) {  // i.e it has changed 
+        this.lastCapflow = this.capflow
+        console.log(Date.now(), "DIR: " + this.capflow)
+        // print the top/bottom five
+        positiveDeltas.sort((a, b) => b.cycleTickDelta - a.cycleTickDelta);
+
+        // Loop through the first 5 positive deltas and print them.
+        console.log("Top 5 Positive Deltas:");
+        for (let i = 0; i < Math.min(5, positiveDeltas.length); i++) {
+          const { key, cycleTickDelta } = positiveDeltas[i];
+          console.log(`DUMP: ${key}, ${cycleTickDelta.toFixed()}`);
         }
+        
+        // Sorting the negativeDeltas array in ascending order based on cycleTickDelta.
+        negativeDeltas.sort((a, b) => a.cycleTickDelta - b.cycleTickDelta);
+        
+        // Loop through the first 5 negative deltas and print them.
+        console.log("Top 5 Negative Deltas:");
+        for (let i = 0; i < Math.min(5, negativeDeltas.length); i++) {
+          const { key, cycleTickDelta } = negativeDeltas[i];
+          console.log(`DUMP: ${key}, ${cycleTickDelta.toFixed()}`);
+        }
+        // sort positiveDeltas and negativeDeltas
+
+        // print ticker, delta
     }
 }
 

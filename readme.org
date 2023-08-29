@@ -1,3 +1,4 @@
+[[INSTALLATION]]
 * install-build-config-run
 *install packages and build*
 npm install --save-dev npm@7.24.1
@@ -157,6 +158,9 @@ export default config;
 
 
 
+[[* CODE INFO]]
+** metadata
+/Users/ayb/mio/code/dfi/egor/node_modules/@perp/curie-deployments/optimism/core/metadata.json   
 * GOTCHAS
 ** debugger acting weird
 

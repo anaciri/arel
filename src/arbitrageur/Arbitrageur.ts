@@ -9,7 +9,7 @@ import { UniswapV3Pool } from "@perp/common/build/types/ethers-uniswap"
 import BigNumber from 'bignumber.js';
 import Big from "big.js"
 import { ethers } from "ethers"
-import { max, padEnd, update, upperFirst } from "lodash"
+import { first, max, padEnd, update, upperFirst } from "lodash"
 import { decode } from "punycode"
 import { Service } from "typedi"
 
@@ -243,7 +243,7 @@ interface Market {
     shortEntryTickDelta: number
     minReturn: number
     maxReturn: number
-    uret: number  // unrealized return
+    uret: number | null  // unrealized return
     minMarginRatio: number
     maxMarginRatio: number
     idxBasisCollateral: number // uses idx based getAccountVal
@@ -299,6 +299,7 @@ export class Arbitrageur extends BotService {
     //convinienc list of enbled market
     enabledMarkets: string[] =[]
     enabledLegs: string[] =[]
+    private normalRegimeStart: number | null = Date.now()
     
     // bearCount + bullCount  <  enabledMarkets
     //corrBullCount: number = 0
@@ -600,10 +601,8 @@ if (config.TRACE_FLAG) { console.log(" TRACE: evt: " + tkr  + " " + timestamp + 
                 orderAmount: Big(666),
                 minReturn: market.MIN_RETURN,
                 maxReturn: market.MAX_RETURN,
-                uret: 1,
-                //minMarginRatio: market.MIN_MARGIN_RATIO,
-                //maxMarginRatio: market.MAX_MARGIN_RATIO,
-                // TODO.set caps for max/min margin ratio
+                uret: null,
+                //uret: 1,
                 maxMarginRatio: market.RESET_MARGIN + config.TP_MARGIN_STEP_INC,
                 minMarginRatio: market.RESET_MARGIN - config.TP_MARGIN_STEP_INC,
                 initCollateral: market.START_COLLATERAL,  // will not change until restart
@@ -976,7 +975,11 @@ capitalFlowCheck(): void {
     // print ts, direction, only if change of direction and dump top/bottom deltas
     //if (this.capflow == Direction.NEUTRAL) { this.lastCapflow = Direction.NEUTRAL; return} // boring nothing happening
     if (this.capflow != this.lastCapflow) {  // i.e it has changed 
-        this.lastCapflow = this.capflow
+        // null timer if Non-Neutral
+        let now = Date.now()
+        this.normalRegimeStart = (this.lastCapflow != Direction.NEUTRAL) ? null : now
+
+        this.lastCapflow = this.capflow 
         console.log(Date.now(), "DIR: " + this.capflow)
         // print the top/bottom five
         positiveDeltas.sort((a, b) => b.cycleTickDelta - a.cycleTickDelta);
@@ -1003,6 +1006,68 @@ capitalFlowCheck(): void {
     }
 }
 
+BKPcapitalFlowCheck(): void {
+    // start with state NEUTRAL
+    this.capflow = Direction.NEUTRAL
+
+    const positiveDeltas: { key: string; cycleTs: Timestamp; cycleTickDelta: number }[] = [];
+    const negativeDeltas: { key: string; cycleTs: Timestamp; cycleTickDelta: number }[] = [];
+
+    for (const key in this.poolState) {
+        const pool = this.poolState[key];
+        if (pool.cycleTickDelta > config.TP_DIR_MIN_TICK_DELTA) {
+            positiveDeltas.push({ key, cycleTs: pool.cycleTickDeltaTs, cycleTickDelta: pool.cycleTickDelta})
+        }
+        if (pool.cycleTickDelta < -config.TP_DIR_MIN_TICK_DELTA) {
+            negativeDeltas.push({ key, cycleTs: pool.cycleTickDeltaTs, cycleTickDelta: pool.cycleTickDelta})
+        }
+    }
+
+    if ((positiveDeltas.length >= config.MIN_CONFIRMING_OBSERVATIONS) && (negativeDeltas.length <= config.MAX_REFUTING_OBSERVATIONS) ) {
+        this.capflow = Direction.CAPIN
+        /*
+        for (const delta of positiveDeltas) {
+            //console.log(`${Date.now()} DUMP CAPIN`);
+        }*/
+    }
+
+    if ((negativeDeltas.length >= config.MIN_CONFIRMING_OBSERVATIONS) && (positiveDeltas.length <= config.MAX_REFUTING_OBSERVATIONS) ){
+        this.capflow = Direction.CAPOUT
+        /*
+        for (const delta of positiveDeltas) {
+            //console.log(`${Date.now()} DUMP CAPOUT`);
+        }*/
+    }
+
+    // print ts, direction, only if change of direction and dump top/bottom deltas
+    //if (this.capflow == Direction.NEUTRAL) { this.lastCapflow = Direction.NEUTRAL; return} // boring nothing happening
+    if (this.capflow != this.lastCapflow) {  // i.e it has changed 
+        this.lastCapflow = this.capflow 
+        console.log(Date.now(), "DIR: " + this.capflow)
+        // print the top/bottom five
+        positiveDeltas.sort((a, b) => b.cycleTickDelta - a.cycleTickDelta);
+
+        // Loop through the first 5 positive deltas and print them.
+        console.log("Top 5 Positive Deltas:");
+        for (let i = 0; i < Math.min(5, positiveDeltas.length); i++) {
+          const { key, cycleTickDelta } = positiveDeltas[i];
+          console.log(`DUMP: ${key}, ${cycleTickDelta.toFixed()}`);
+        }
+        
+        // Sorting the negativeDeltas array in ascending order based on cycleTickDelta.
+        negativeDeltas.sort((a, b) => a.cycleTickDelta - b.cycleTickDelta);
+        
+        // Loop through the first 5 negative deltas and print them.
+        console.log("Top 5 Negative Deltas:");
+        for (let i = 0; i < Math.min(5, negativeDeltas.length); i++) {
+          const { key, cycleTickDelta } = negativeDeltas[i];
+          console.log(`DUMP: ${key}, ${cycleTickDelta.toFixed()}`);
+        }
+        // sort positiveDeltas and negativeDeltas
+
+        // print ticker, delta
+    }
+}
 
 async getPosVal(leg: Market): Promise<Number> {
     let pv =  (await this.perpService.getTotalPositionValue(leg.wallet.address, leg.baseToken)).toNumber()
@@ -1244,7 +1309,7 @@ if (config.TRACE_FLAG) { console.log(Date.now() + " TRACE: mktDir: " + btcDelta.
 }
 // what legs have not been killed
 async getOpenLegUrets() {
-    const MAX_LEVERAGE = 10  // will be haircut
+    //const MAX_LEVERAGE = 10  // will be haircut
     // for the very first time you will need to have a minimum leverage otherwise factor will be zero
     //const START_MIN_LEVERAGE = 0.2 //so that you start at 0.2*10 = 2x leverage
     let uretlong = [];
@@ -1262,6 +1327,7 @@ async getOpenLegUrets() {
 // amygadala shortcut if side count is higher than qrom then automatic 10x in favored side and MIN leverage in other
 // if both sides qrom i.e high dispersion then 10x in both and rely on maxloss/solidaritkll to exit
 //TODO.DEPRECATED
+/*
 async computeKellyLeverage() {
     const MAX_LEVERAGE = 10  // will be haircut
     // for the very first time you will need to have a minimum leverage otherwise factor will be zero
@@ -1299,6 +1365,7 @@ async computeKellyLeverage() {
 
     return {longKellyLvrj: MAX_LEVERAGE*lkf, shortKellyLvrj: MAX_LEVERAGE*skf};
 }
+*/
 //----------------------------------
 // wakeUpCheck
 //-----
@@ -1724,6 +1791,9 @@ async putMktToSleep(mkt: Market) {
             mkt.resetMargin = MOVEME_FACTORY_RESET_MARGIN
             mkt.maxMarginRatio = mkt.resetMargin + config.TP_MARGIN_STEP_INC
             //mkt.resetMargin = Math.min(mkt.resetMargin + config.TP_MARGIN_STEP_INC, MOVEME_MAX_MARGIN)
+            //AYB ADD for scratch logic uret = null
+            mkt.uret = null
+            this.marketMap[mkt.name].uret = null
     console.log(tstmp + ": INFO: Kill " + mkt.name + ", stldcoll: " + settledCol.toFixed(4) + " oldcoll: " + oldStartCol.toFixed(4))
 }
 
@@ -1814,7 +1884,8 @@ async maxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
 
          let uret = 1 + (icol - collatbasis)/collatbasis
          //let wret = 1 + (wcol - wcollatbasis)/wcollatbasis
-         mkt.uret = uret
+         // save it for scratch check
+         this.marketMap[mkt.name].uret = uret
         if (uret < config.TP_MAX_ROLL_LOSS ) { check = true  }// mark check positive 
           console.log(mkt.name + " ibasis:" + mkt.idxBasisCollateral.toFixed(2) + "idx uret: " + uret.toFixed(4))
     } 
@@ -1898,8 +1969,8 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
             // check if I can fastract scale to MAX_LEVERAGE
             let urets = market.side == Side.LONG ? (await this.getOpenLegUrets()).uretLongs
                                                  : (await this.getOpenLegUrets()).uretShorts
-            // do i have qrom of already same-side-opened profitable positions to fastract?
-            if (urets.filter((uret) => uret > config.TP_QRM_MIN_RET).length >= config.TP_QRM_FOR_MAX_LEVERAGE) { 
+            // uret in only null if NOT open ie possize  exacltily 0 so it wont go to neither shorts or lngs
+            if (urets.filter((uret) => uret! > config.TP_QRM_MIN_RET).length >= config.TP_QRM_FOR_MAX_LEVERAGE) { 
                 console.log(Date.now() + " INFO: SCALE 2 MAXMR " + market.name + " mr: " + market.currMargin.toFixed(4))
                 scale = MAX_LEVERAGE }
             /*else { //snap, just the step increment
@@ -1957,8 +2028,8 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
                 // check if I can fastract scale to MAX_LEVERAGE
                 let urets = market.side == Side.LONG ? (await this.getOpenLegUrets()).uretLongs
                                                      : (await this.getOpenLegUrets()).uretShorts
-                // do i have qrom of already same-side-opened profitable positions to fastract?
-                if (urets.filter((uret) => uret > config.TP_QRM_MIN_RET).length >= config.TP_QRM_FOR_MAX_LEVERAGE) { 
+                // WARNING. Expecting uret to be non-null
+                if (urets.filter((uret) => uret! > config.TP_QRM_MIN_RET).length >= config.TP_QRM_FOR_MAX_LEVERAGE) { 
                     console.log(Date.now() + " INFO: SCALE 2 MAXMR " + market.name + " mr: " + market.currMargin.toFixed(4))
                     scale = MAX_LEVERAGE }
                 /*else { //snap, just the step increment
@@ -1996,8 +2067,9 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
             }
             market.currMargin = perpmr.toNumber()
         }
-
-  async kellyMaxLeverageTriggerCheck(market: Market) {
+//DEPRECATED
+/*
+async kellyMaxLeverageTriggerCheck(market: Market) {
 
     if ( !(await this.isNonZeroPos(market)) ) {return}
 
@@ -2013,7 +2085,7 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
     if (perppnl < 0 ) { return }
     let freec = (await this.perpService.getFreeCollateral(market.wallet.address)).toNumber()
     if (freec < config.TP_MIN_FREE_COLLATERAL ) { return }
-/*
+
 let nxtsz = (market.startCollateral + perppnl)/(market.resetMargin*idxPrice)
 let incsz = nxtsz - Math.abs(csz)
 let resetamnt = Math.abs(incsz)*idxPrice
@@ -2021,7 +2093,7 @@ let resetamnt = Math.abs(incsz)*idxPrice
 let usdAmount = Math.min(resetamnt, freec)*HAIRCUT
 */
 // leverage level is determined by kelly. computeKelly return factor of max leverage
-let kftors = await this.computeKellyLeverage()
+/*let kftors = await this.computeKellyLeverage()
 // returns a number between 0 and 10*TP_EXECUTION_HAIRCUT
 let klvrj = market.side == "long" ? kftors.longKellyLvrj : kftors.shortKellyLvrj
 // note there is a floor on scale computed i.e 0.2
@@ -2034,7 +2106,7 @@ let usdAmount = freec*scale*config.TP_EXECUTION_HAIRCUT
                                   " usdamnt: " + usdAmount.toFixed(4) + " freec: " + freec.toFixed(4))
         } catch { console.log(Date.now() + ", maxMargin Failed Open,  " +  market.name )}
     }
-}
+}*/
 
 async maxMaxMarginRatioCheck(market: Market) {
     if ( !(await this.isNonZeroPos(market)) ) {return}
@@ -2155,6 +2227,29 @@ async ensureSwapListenersOK(): Promise<void> {
     }
   }
 
+  async scratchCheck() {
+    // buzzer went off?
+    if (this.normalRegimeStart == null) return;
+    let now = Date.now()
+    const nrtime = now - this.normalRegimeStart
+    if (nrtime < 1000*config.MAX_NORMALREGIME_BUZZ_SECS) return;
+
+    // loop through enabled markets and get returns
+    const filteredMarkets: Market[] = [];
+
+    for (const marketKey in this.marketMap) {
+        const market = this.marketMap[marketKey];
+        if (market.uret !== null && market.uret < config.MIN_LOSS_BUZZ) {
+            filteredMarkets.push(market);
+        }
+    }
+
+    // Call putMktToSleep for each market in filteredMarkets
+    for (const market of filteredMarkets) {
+        await this.putMktToSleep(market);
+    }
+}
+
 //  mainRoutine
 // TODO: OPTIMIZE: batch all checks for all legs. can avoid unnecessary checks e.g if SHORT leg above threshold twin will not
 //--------------------------------------------------------------------------------------
@@ -2164,6 +2259,7 @@ async ensureSwapListenersOK(): Promise<void> {
     // new cycle. update cycle deltas based on what events have been received since last cycle
     this.processEventInputs()
     this.capitalFlowCheck()
+    
     //this.computeCorrIndex()
     // adjust gas price
     this.setGasPx()
@@ -2177,6 +2273,7 @@ async ensureSwapListenersOK(): Promise<void> {
     //this.checkOnPoolSubEmptyBucket() //<========================== poolSubChecknPullBucket
 //-------this.mktDirectionChangeCheck()  // asses direction. WAKEUP deps on this
       // MMR. maximum margin RESET check
+    await this.scratchCheck()  
     await this.ratchedMaxLeverageTriggerCheck(market) 
     //await this.maxMaxMarginRatioCheck(market)
     await this.wakeUpCheck(market) //wakeup only favored leg if sided mkt else both

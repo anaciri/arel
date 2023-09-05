@@ -2246,6 +2246,9 @@ async ensureSwapListenersOK(): Promise<void> {
 
     // Call putMktToSleep for each market in filteredMarkets
     for (const market of filteredMarkets) {
+        // prevent re-attempts to close
+        this.marketMap[market.name].uret = null
+        console.log(new Date().toLocaleDateString() + " INFO: SCRATCHING....")
         await this.putMktToSleep(market);
     }
 }

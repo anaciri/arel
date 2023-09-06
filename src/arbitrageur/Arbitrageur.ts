@@ -980,7 +980,7 @@ capitalFlowCheck(): void {
         this.normalRegimeStart = (this.lastCapflow != Direction.NEUTRAL) ? null : now
 
         this.lastCapflow = this.capflow 
-        console.log(Date.now(), "DIR: " + this.capflow)
+        console.log(new Date().toLocaleString() + " DIR: " + this.capflow + "NRStart :" + this.normalRegimeStart)
         // print the top/bottom five
         positiveDeltas.sort((a, b) => b.cycleTickDelta - a.cycleTickDelta);
 

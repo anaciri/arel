@@ -1791,9 +1791,6 @@ async putMktToSleep(mkt: Market) {
             mkt.resetMargin = MOVEME_FACTORY_RESET_MARGIN
             mkt.maxMarginRatio = mkt.resetMargin + config.TP_MARGIN_STEP_INC
             //mkt.resetMargin = Math.min(mkt.resetMargin + config.TP_MARGIN_STEP_INC, MOVEME_MAX_MARGIN)
-            //AYB ADD for scratch logic uret = null
-            mkt.uret = null
-            this.marketMap[mkt.name].uret = null
     console.log(tstmp + ": INFO: Kill " + mkt.name + ", stldcoll: " + settledCol.toFixed(4) + " oldcoll: " + oldStartCol.toFixed(4))
 }
 
@@ -2227,7 +2224,21 @@ async ensureSwapListenersOK(): Promise<void> {
     }
   }
 
-  async scratchCheck() {
+  async scratchCheck(market: Market) {
+    // buzzer went off?
+    if (this.normalRegimeStart == null) return;
+    let now = Date.now()
+    const nrtime = now - this.normalRegimeStart
+    if (nrtime < 1000*config.MAX_NORMALREGIME_BUZZ_SECS) return;
+    
+    if (market.uret !== null && market.uret < config.MIN_LOSS_BUZZ) {
+        this.marketMap[market.name].uret = null
+        console.log(new Date().toLocaleDateString() + " INFO: SCRATCHING....")
+        await this.putMktToSleep(market);
+    }
+}
+
+async BKPscratchCheck() {
     // buzzer went off?
     if (this.normalRegimeStart == null) return;
     let now = Date.now()
@@ -2276,7 +2287,7 @@ async ensureSwapListenersOK(): Promise<void> {
     //this.checkOnPoolSubEmptyBucket() //<========================== poolSubChecknPullBucket
 //-------this.mktDirectionChangeCheck()  // asses direction. WAKEUP deps on this
       // MMR. maximum margin RESET check
-    await this.scratchCheck()  
+    await this.scratchCheck(market)  
     await this.ratchedMaxLeverageTriggerCheck(market) 
     //await this.maxMaxMarginRatioCheck(market)
     await this.wakeUpCheck(market) //wakeup only favored leg if sided mkt else both

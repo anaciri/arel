@@ -2233,8 +2233,11 @@ async ensureSwapListenersOK(): Promise<void> {
     
     if (market.uret !== null && market.uret < config.MIN_LOSS_BUZZ) {
         this.marketMap[market.name].uret = null
-        console.log(new Date().toLocaleDateString() + " INFO: SCRATCHING....")
-        await this.putMktToSleep(market);
+        console.log(new Date().toLocaleDateString() + " INFO: SCRATCHING " + market.name)
+        // check that you do need to close
+        if ( await this.isNonZeroPos( market) ) {
+            await this.putMktToSleep(market)
+        }
     }
 }
 

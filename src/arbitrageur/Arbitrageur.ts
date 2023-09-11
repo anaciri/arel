@@ -977,7 +977,8 @@ capitalFlowCheck(): void {
     if (this.capflow != this.lastCapflow) {  // i.e it has changed 
         // null timer if Non-Neutral
         let now = Date.now()
-        this.normalRegimeStart = (this.lastCapflow != Direction.NEUTRAL) ? null : now
+        //it changed. if it changed back to neutral reset regimestart else make it null
+        this.normalRegimeStart = (this.capflow == Direction.NEUTRAL) ? now : null
 
         this.lastCapflow = this.capflow 
         console.log(new Date().toLocaleString() + " DIR: " + this.capflow + "NRStart :" + this.normalRegimeStart)
@@ -2225,10 +2226,11 @@ async ensureSwapListenersOK(): Promise<void> {
   }
 
   async scratchCheck(market: Market) {
-    // buzzer went off?
+    // buzzer went offn?
     if (this.normalRegimeStart == null) return;
     let now = Date.now()
     const nrtime = now - this.normalRegimeStart
+    console.log("DIR:" + market.name + this.normalRegimeStart.toString() + "," + market.uret )
     if (nrtime < 1000*config.MAX_NORMALREGIME_BUZZ_SECS) return;
     
     if (market.uret !== null && market.uret < config.MIN_LOSS_BUZZ) {

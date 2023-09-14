@@ -942,6 +942,7 @@ if( config.TRACE_FLAG) { console.log(now + " EVTSUB: " + tkr + " wcycleTicks: " 
 capitalFlowCheck(): void {
     // start with state NEUTRAL
     this.capflow = Direction.NEUTRAL
+    
 
     const positiveDeltas: { key: string; cycleTs: Timestamp; cycleTickDelta: number }[] = [];
     const negativeDeltas: { key: string; cycleTs: Timestamp; cycleTickDelta: number }[] = [];
@@ -2230,7 +2231,7 @@ async ensureSwapListenersOK(): Promise<void> {
     if (this.normalRegimeStart == null) return;
     let now = Date.now()
     const nrtime = now - this.normalRegimeStart
-    console.log("DIR:" + market.name + this.normalRegimeStart.toString() + "," + market.uret )
+    //console.log("DIR:" + market.name + this.normalRegimeStart.toString() + "," + market.uret )
     if (nrtime < 1000*config.MAX_NORMALREGIME_BUZZ_SECS) return;
     
     if (market.uret !== null && market.uret < config.MIN_LOSS_BUZZ) {

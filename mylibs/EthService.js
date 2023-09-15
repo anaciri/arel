@@ -69,8 +69,7 @@ let EthService = EthService_1 = class EthService {
             const endpoint = this.provider.connection.url;
             try {
                 const { latency } = await this.checkBlockNumberWithLatency();
-                //TODO.STK endpoint health monitoring
-                //this.log.jinfo({ event: `EndpointHealthCheckRoutineAlive`, params: { endpoint, latency } });
+                this.log.jinfo({ event: `EndpointHealthCheckRoutineAlive`, params: { endpoint, latency } });
                 if (latency > MAX_ACCEPTABLE_LATENCY_MSEC) {
                     this.rotateToNextEndpoint(callback);
                 }
@@ -101,6 +100,13 @@ let EthService = EthService_1 = class EthService {
             });
         });
     }
+    aybSetProvider(toEndpoint) {
+        this.destroy();
+        const fromEndpoint = this.provider.connection.url;
+        this.log.jinfo({ event: "MON: Chaning provider...", params: { fromEndpoint, toEndpoint }, });
+        this.provider = EthService_1.providerFactory(toEndpoint);
+    }
+
     rotateToNextEndpoint(callback = undefined) {
         this.destroy();
         const fromEndpoint = this.provider.connection.url;

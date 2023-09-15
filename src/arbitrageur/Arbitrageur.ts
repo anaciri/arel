@@ -53,7 +53,10 @@ let dbgcTicks: TickData[] = []; // declare variable outside if statement
 let dbgmTicks: TickData[] = [];
 
 const configPath = process.env.CONFIG_PATH;
+const dmra = process.env.DMR_ENDPOINT_A
+
 if (!configPath) { throw new Error('CONFIG_PATH environment variable is not set.') }
+if (!dmra) { throw new Error('DMR_ENDPOINT environment variable is not set.') }
 
 const configJson = readFileSync(configPath, 'utf-8');
 const config = JSON.parse(configJson);
@@ -980,6 +983,16 @@ capitalFlowCheck(): void {
         let now = Date.now()
         //it changed. if it changed back to neutral reset regimestart else make it null
         this.normalRegimeStart = (this.capflow == Direction.NEUTRAL) ? now : null
+
+        // if changed into NON-NR then set provider to dmr. If is back to NR rotate to trigger a change
+        if (this.capflow != Direction.NEUTRAL) {
+            this.ethService.aybSetProvider(dmra!)
+            console.log("INFRA: changing provider to: " + this.ethService.provider.connection.url)
+        }
+        else { // back to NORMAL, release DMR node (after time?)
+            this.ethService.rotateToNextEndpoint()
+            console.log("INFRA: changing provider to: " + this.ethService.provider.connection.url)
+        }
 
         this.lastCapflow = this.capflow 
         console.log(new Date().toLocaleString() + " DIR: " + this.capflow + "NRStart :" + this.normalRegimeStart)

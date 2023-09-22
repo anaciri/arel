@@ -303,6 +303,7 @@ export class Arbitrageur extends BotService {
     enabledMarkets: string[] =[]
     enabledLegs: string[] =[]
     private normalRegimeStart: number | null = Date.now()
+    private cycleTimmer: number = config.PRICE_CHECK_INTERVAL_SEC
     
     // bearCount + bullCount  <  enabledMarkets
     //corrBullCount: number = 0
@@ -749,7 +750,8 @@ if (config.TRACE_FLAG) { console.log(" TRACE: evt: " + tkr  + " " + timestamp + 
                     }
                 }),
             )
-            await sleep(config.PRICE_CHECK_INTERVAL_SEC * 1000)
+            //await sleep(config.PRICE_CHECK_INTERVAL_SEC * 1000)
+            await sleep(this.cycleTimmer * 1000)
 
             // Run evtNodeCheck if EVT_PROVIDER_CHECK_INTERVAL_SEC seconds have elapsed since the last call
             const now = Date.now();
@@ -942,6 +944,21 @@ if( config.TRACE_FLAG) { console.log(now + " EVTSUB: " + tkr + " wcycleTicks: " 
 
 // perp uses swap in/swap out to determine if in a crash base token is being swaped in (and usd removed) ie CAPOUT
 // or in a bull swap out i.e CAPIN
+
+// Enter/Exit DMR Mode. First just timer later do node
+enterDMR(){
+    // TODO: move node switch from capitalFlowCheck
+    // TODO: transition should be NR-SR-DMR (normalregime-stressregime-dislocaiton using magnetic matrix)
+     this.cycleTimmer = config.PRICE_CHECK_INTERVAL_SEC
+    console.log("DIR: Entering DMR: timmer: " + this.cycleTimmer )
+
+}
+exitDMR(){
+// TODO: move node switch from capitalFlowCheck
+this.cycleTimmer = config.DMR_CYCLE_INTERVAL_SEC
+console.log("DIR: Exiting DMR: timmer: " + this.cycleTimmer )
+}
+
 capitalFlowCheck(): void {
     // start with state NEUTRAL
     this.capflow = Direction.NEUTRAL
@@ -986,10 +1003,14 @@ capitalFlowCheck(): void {
 
         // if changed into NON-NR then set provider to dmr. If is back to NR rotate to trigger a change
         if (this.capflow != Direction.NEUTRAL) {
+            //TODO move to exitDMR with a timer. await?
+            this.enterDMR()
             this.ethService.aybSetProvider(dmra!)
             console.log("INFRA: changing provider to: " + this.ethService.provider.connection.url)
         }
         else { // back to NORMAL, release DMR node (after time?)
+            //TODO move to exitDMR with a timer. await?
+            this.exitDMR()
             this.ethService.rotateToNextEndpoint()
             console.log("INFRA: changing provider to: " + this.ethService.provider.connection.url)
         }

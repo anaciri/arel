@@ -949,13 +949,13 @@ if( config.TRACE_FLAG) { console.log(now + " EVTSUB: " + tkr + " wcycleTicks: " 
 enterDMR(){
     // TODO: move node switch from capitalFlowCheck
     // TODO: transition should be NR-SR-DMR (normalregime-stressregime-dislocaiton using magnetic matrix)
-     this.cycleTimmer = config.PRICE_CHECK_INTERVAL_SEC
+     this.cycleTimmer = config.DMR_CYCLE_INTERVAL_SEC
     console.log("DIR: Entering DMR: timmer: " + this.cycleTimmer )
 
 }
 exitDMR(){
 // TODO: move node switch from capitalFlowCheck
-this.cycleTimmer = config.DMR_CYCLE_INTERVAL_SEC
+this.cycleTimmer = config.PRICE_CHECK_INTERVAL_SEC
 console.log("DIR: Exiting DMR: timmer: " + this.cycleTimmer )
 }
 

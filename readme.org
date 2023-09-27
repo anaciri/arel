@@ -1,5 +1,10 @@
 [[INSTALLATION]]
 * install-build-config-run
+*to get maker/bitmon install steps*
+npm install --save-dev npm@7.24.1 ; OR yarn add npm@7.24.1 --dev
+npx -p npm@7.24.1 npm run build
+env $(cat .env | grep -v '#' | xargs) npm run start  ; assuming .env and config are set properly
+  
 *install packages and build*
 npm install --save-dev npm@7.24.1
 npm install --save-dev typescript
@@ -16,7 +21,7 @@ npm run build
 
 - mute noise BotService and PerpService
 cp mylibs/BotService.js node_modules/@perp/common/build/lib/perp/BotService.js
-cp mylibs/BotService.js node_modules/@perp/common/build/lib/eth/EthService.js
+cp mylibs/EthService.js node_modules/@perp/common/build/lib/eth/EthService.js
 
 *execute*
 env $(cat .env | grep -v '#' | xargs) npm run start
@@ -100,7 +105,14 @@ export default config;
     
 * WORKFLOWS
 ** deploy new change
-   
+*** deploy changes in ethService.js
+- i
+  - [ ] ethService overwrite tracked in mylybs folder
+  - [ ] you need to update also ethService.d.ts for declaration
+  - [ ] sudo cp in: node_modules/@perp/common/build/lib/eth   
+  
+
+    
 *** local testing
 - local testing can be against hardhat snapshot or live prod node (if already have open position)
 

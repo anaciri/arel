@@ -175,6 +175,12 @@ export default config;
    dont need to re-install just backup and replace metadata.json in the *common* folder
    RIGHT                                   node_modules/@perp/common/node_modules/@perp/curie-deployments/optimism/core
    WRONG: ==> /Users/ayb/mio/code/dfi/egor/node_modules/@perp/curie-deployments/optimism/core/metadata.json
+
+* OPS
+- Update START_COLLATERAL and COLLAT_BASIS
+mio/code/dfi/ops/bit/scripts  ==>  ../src/rebasis.py
+
+
 * GOTCHAS
 ** editing metadata.json sudo cat wont work instead
    create a file in nol and then sudo cp to node_modules path

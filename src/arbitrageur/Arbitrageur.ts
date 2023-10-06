@@ -249,6 +249,8 @@ interface Market {
     uret: number | null  // unrealized return
     minMarginRatio: number
     maxMarginRatio: number
+    fcb: number | null  // free collateral basis
+    fcr: number | null  // free collateral return
     idxBasisCollateral: number // uses idx based getAccountVal
     wBasisCollateral: number  // uses getPnLAdjustedCollateral valu
     startCollateral: number // gets reset everytme we reopen
@@ -611,6 +613,8 @@ if (config.TRACE_FLAG) { console.log(" TRACE: evt: " + tkr  + " " + timestamp + 
                 minMarginRatio: market.RESET_MARGIN - config.TP_MARGIN_STEP_INC,
                 initCollateral: market.START_COLLATERAL,  // will not change until restart
                 startCollateral: market.START_COLLATERAL, // will change to previous settled collatera
+                fcb:null,
+                fcr:null,
                 idxBasisCollateral: market.START_COLLATERAL, // incl unrealized profit
                 wBasisCollateral: market.START_COLLATERAL, // same starting point as idx
                 resetMargin: market.RESET_MARGIN,
@@ -1041,7 +1045,7 @@ capitalFlowCheck(): void {
         // print ticker, delta
     }
 }
-
+/*
 BKPcapitalFlowCheck(): void {
     // start with state NEUTRAL
     this.capflow = Direction.NEUTRAL
@@ -1061,19 +1065,11 @@ BKPcapitalFlowCheck(): void {
 
     if ((positiveDeltas.length >= config.MIN_CONFIRMING_OBSERVATIONS) && (negativeDeltas.length <= config.MAX_REFUTING_OBSERVATIONS) ) {
         this.capflow = Direction.CAPIN
-        /*
-        for (const delta of positiveDeltas) {
-            //console.log(`${Date.now()} DUMP CAPIN`);
-        }*/
-    }
+     }
 
     if ((negativeDeltas.length >= config.MIN_CONFIRMING_OBSERVATIONS) && (positiveDeltas.length <= config.MAX_REFUTING_OBSERVATIONS) ){
         this.capflow = Direction.CAPOUT
-        /*
-        for (const delta of positiveDeltas) {
-            //console.log(`${Date.now()} DUMP CAPOUT`);
-        }*/
-    }
+     }
 
     // print ts, direction, only if change of direction and dump top/bottom deltas
     //if (this.capflow == Direction.NEUTRAL) { this.lastCapflow = Direction.NEUTRAL; return} // boring nothing happening
@@ -1103,7 +1099,7 @@ BKPcapitalFlowCheck(): void {
 
         // print ticker, delta
     }
-}
+}*/
 
 async getPosVal(leg: Market): Promise<Number> {
     let pv =  (await this.perpService.getTotalPositionValue(leg.wallet.address, leg.baseToken)).toNumber()
@@ -1148,6 +1144,10 @@ async getPosVal(leg: Market): Promise<Number> {
     // open was successful. update pricing
         let scoll = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
         console.warn("WARN: using twap based getAccountValue to compute basis. FIXME!")
+
+        mkt.fcb = (await this.perpService.getFreeCollateral(mkt.wallet.address)).toNumber()
+        mkt.fcr = 1
+
         mkt.idxBasisCollateral = scoll
         mkt.startCollateral = scoll
            // update mkt.size and mkt.basis using pool latest price
@@ -1210,6 +1210,9 @@ computeWeightedArithAvrg(cticks: TickData[], cweights: number[]): number {
         await this.closePosition(mkt.wallet, mkt.baseToken, broverrides,undefined,undefined)
         //bookeeping: upd startCollateral to settled and save old one in basisCollateral
         let scoll = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
+        mkt.fcb = null
+        mkt.fcr = null
+
         mkt.idxBasisCollateral = scoll
         mkt.startCollateral = scoll
         //reset peakTick. eventInput will set it again
@@ -1986,8 +1989,12 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
         if (!perpmr) {  throw new Error(market.name + " FAIL: pmr null in maxMaxMarginRatioCheck")}
 
         let freec = (await this.perpService.getFreeCollateral(market.wallet.address)).toNumber()
+        // HACK this is only to handle if i restart with positions already open
+        if(this.marketMap.fcb == null) { market.fcb = freec; market.fcr = 1}
+        
         if (config.TRACE_FLAG) { console.log("TRACE: " + market.name + " perpmr:" + perpmr.toFixed(4) 
                                     +  " maxmr:" + market.maxMarginRatio.toFixed(4) +  " freec:" + freec.toFixed(4) 
+                                    +  " fcr:" + 1 + (freec-market.fcb!)/market.fcb! 
                                     +  " mrp: " + (10000*(market.maxMarginRatio - perpmr.toNumber())).toFixed() ) }
         //TODO.OPTIMIZE: if (perppnl < 0 ) { return }
         if (freec < config.TP_MIN_FREE_COLLATERAL ) { return }
@@ -2139,7 +2146,7 @@ let usdAmount = freec*scale*config.TP_EXECUTION_HAIRCUT
                                   " usdamnt: " + usdAmount.toFixed(4) + " freec: " + freec.toFixed(4))
         } catch { console.log(Date.now() + ", maxMargin Failed Open,  " +  market.name )}
     }
-}*/
+}
 
 async maxMaxMarginRatioCheck(market: Market) {
     if ( !(await this.isNonZeroPos(market)) ) {return}
@@ -2183,16 +2190,8 @@ if (perpmr.toNumber() > market.maxMarginRatio) {
     }
     catch { console.log(Date.now() + ", maxMargin Failed Open,  " +  market.name )}
 }
-/* W_END: hack
-if (currMR > market.maxMarginRatio) {
-        let usdAmount = config.TP_SCALE_FACTOR*Math.abs(csz)*idxPrice 
-        try { await this.open(market, usdAmount) 
-            console.log(Date.now() + " INFO: scale " + market.name + " mr: " + currMR.toFixed(4) +  "usdamnt: " + usdAmount.toFixed())
-        }
-        catch { console.log(Date.now() + ", maxMargin Failed Open,  " +  market.name )}
-    }*/
-
 }
+*/
 
 
 // FIXME: use the new way >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>

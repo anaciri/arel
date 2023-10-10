@@ -179,6 +179,7 @@ export default config;
 * OPS
 - Update START_COLLATERAL and COLLAT_BASIS
 mio/code/dfi/ops/bit/scripts  ==>  ../src/rebasis.py
+vscode: start from: /mio/code/dfi/ops/bit
 
 
 * GOTCHAS

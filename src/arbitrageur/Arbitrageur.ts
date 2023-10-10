@@ -45,6 +45,7 @@ interface MarketConfig {
     MIN_MARGIN_RATIO: number;
     MAX_MARGIN_RATIO: number;
     START_COLLATERAL: number;
+    FC_BASIS: number
     RESET_MARGIN: number;
   }
   
@@ -249,8 +250,8 @@ interface Market {
     uret: number | null  // unrealized return
     minMarginRatio: number
     maxMarginRatio: number
-    fcb: number | null  // free collateral basis
-    fcr: number | null  // free collateral return
+    fcb: number  // free collateral basis
+    fcr: number  // free collateral return
     idxBasisCollateral: number // uses idx based getAccountVal
     wBasisCollateral: number  // uses getPnLAdjustedCollateral valu
     startCollateral: number // gets reset everytme we reopen
@@ -613,8 +614,8 @@ if (config.TRACE_FLAG) { console.log(" TRACE: evt: " + tkr  + " " + timestamp + 
                 minMarginRatio: market.RESET_MARGIN - config.TP_MARGIN_STEP_INC,
                 initCollateral: market.START_COLLATERAL,  // will not change until restart
                 startCollateral: market.START_COLLATERAL, // will change to previous settled collatera
-                fcb:null,
-                fcr:null,
+                fcb: market.FC_BASIS,
+                fcr:1,  // when position is not open yest fcb == fc == deposited amount
                 idxBasisCollateral: market.START_COLLATERAL, // incl unrealized profit
                 wBasisCollateral: market.START_COLLATERAL, // same starting point as idx
                 resetMargin: market.RESET_MARGIN,
@@ -1146,7 +1147,7 @@ async getPosVal(leg: Market): Promise<Number> {
         console.warn("WARN: using twap based getAccountValue to compute basis. FIXME!")
 
         mkt.fcb = (await this.perpService.getFreeCollateral(mkt.wallet.address)).toNumber()
-        mkt.fcr = 1
+        mkt.fcr = 1 // we just opened
 
         mkt.idxBasisCollateral = scoll
         mkt.startCollateral = scoll
@@ -1210,8 +1211,8 @@ computeWeightedArithAvrg(cticks: TickData[], cweights: number[]): number {
         await this.closePosition(mkt.wallet, mkt.baseToken, broverrides,undefined,undefined)
         //bookeeping: upd startCollateral to settled and save old one in basisCollateral
         let scoll = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
-        mkt.fcb = null
-        mkt.fcr = null
+        mkt.fcb = scoll
+        mkt.fcr = 1  // should get overwriten after open
 
         mkt.idxBasisCollateral = scoll
         mkt.startCollateral = scoll
@@ -1254,12 +1255,12 @@ async closeMkt( mktName: string) {
 // dont hang around too much
  async genTWreport() {
     const writeStream = fs.createWriteStream('twreport.csv');
-    writeStream.write(`name, startCollat, endCollat, bmargin, open\n`);
+    writeStream.write(`name, endCollat, initCollat, fcb, open\n`)
   
     for (const m of Object.values(this.marketMap)) {
       let open = await this.isNonZeroPos(m) ? "true" : "false";
       //let finalcollat = open ? this.poolState[m] : m.idxBasisCollateral
-      writeStream.write(`${m.name}, ${m.initCollateral}, ${m.idxBasisCollateral}, ${m.currMargin},${open}\n`);
+      writeStream.write(`${m.name}, ${m.idxBasisCollateral}, ${m.initCollateral}, ${m.fcb},${open}\n`);
     }
   
     writeStream.on('finish', () => {
@@ -1981,27 +1982,34 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
   }
 
   async ratchedMaxLeverageTriggerCheck(market: Market) {
-    const MAX_LEVERAGE = 10  //haircust will be applied
+    const MAX_LEVERAGE = 4  //haircust will be applied
         if ( !(await this.isNonZeroPos(market)) ) {return}
+        
     //TODO.OPTIMIZE remove perpnl not used
         //let perppnl = (await this.perpService.getUnrealizedPnl(market.wallet.address)).toNumber()
         let perpmr = await this.perpService.getMarginRatio(market.wallet.address)
         if (!perpmr) {  throw new Error(market.name + " FAIL: pmr null in maxMaxMarginRatioCheck")}
 
         let freec = (await this.perpService.getFreeCollateral(market.wallet.address)).toNumber()
-        // HACK this is only to handle if i restart with positions already open
-        if(this.marketMap.fcb == null) { market.fcb = freec; market.fcr = 1}
-        
+        market.fcr = 1 + ((freec-market.fcb)/market.fcb)
+       
         if (config.TRACE_FLAG) { console.log("TRACE: " + market.name + " perpmr:" + perpmr.toFixed(4) 
                                     +  " maxmr:" + market.maxMarginRatio.toFixed(4) +  " freec:" + freec.toFixed(4) 
-                                    +  " fcr:" + 1 + (freec-market.fcb!)/market.fcb! 
+                                    +  " fcb:" + market.fcb.toFixed(4) 
+                                    +  " fcr:" + market.fcr.toFixed(4) 
                                     +  " mrp: " + (10000*(market.maxMarginRatio - perpmr.toNumber())).toFixed() ) }
         //TODO.OPTIMIZE: if (perppnl < 0 ) { return }
         if (freec < config.TP_MIN_FREE_COLLATERAL ) { return }
         // we only scale if one sided market to avoid drift scaling 
         if (this.capflow == Direction.NEUTRAL)  { return }
     
-        // check if crossed threshold. two tracks regular track LEV_INC or fastrack to MAX_LEVERAGE
+        //--- fcr check to proceed. should be the only check
+        if (market.fcr <  config.SCALE_MIN_FCR) {
+            console.log(new Date().toLocaleString() + " : INFO: " + market.name + " Insufficient FCR to scale")
+            return
+        }
+
+        // -------------- REMOVE THIS LOGIC. USE fcr instead. mr should be kept fixed to increas stability
         if ( perpmr.toNumber() > market.maxMarginRatio ) {
             // scale to current maxMarginRatio. to get higher leverage. TODO: asses if better to use current mr at lower lvrj
             let scale = 1/market.maxMarginRatio
@@ -2017,7 +2025,7 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
                 let newmr = Math.max(market.basisMargin - config.TP_MARGIN_STEP_INC, 1/MAX_LEVERAGE)
                 scale = 1/newmr
             }*/
-            // ok. scale settled ready to opend
+            // ok. scale settled ready to open
             let usdAmount = freec*scale*config.TP_EXECUTION_HAIRCUT
             // check size to avoid runaway-chainre inhibitor EX_OPLAS. Todo change to
             //let usdAmount = Math.min(freec*scale*config.TP_EXECUTION_HAIRCUT, config.TP_MAX_OPEN_SZ_USD) AND dont step increase

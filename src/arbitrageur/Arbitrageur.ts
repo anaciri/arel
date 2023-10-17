@@ -1827,7 +1827,7 @@ async putMktToSleep(mkt: Market) {
             let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
             // bump up reset margin
             const MOVEME_MAX_MARGIN = 0.999
-            const MOVEME_FACTORY_RESET_MARGIN = 0.45
+            const MOVEME_FACTORY_RESET_MARGIN = 0.40
             mkt.resetMargin = MOVEME_FACTORY_RESET_MARGIN
             mkt.maxMarginRatio = mkt.resetMargin + config.TP_MARGIN_STEP_INC
             //mkt.resetMargin = Math.min(mkt.resetMargin + config.TP_MARGIN_STEP_INC, MOVEME_MAX_MARGIN)
@@ -1994,10 +1994,10 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
         market.fcr = 1 + ((freec-market.fcb)/market.fcb)
        
         if (config.TRACE_FLAG) { console.log("TRACE: " + market.name + " perpmr:" + perpmr.toFixed(4) 
+                                    +  " mrp: " + (10000*(market.maxMarginRatio - perpmr.toNumber())).toFixed()
                                     +  " maxmr:" + market.maxMarginRatio.toFixed(4) +  " freec:" + freec.toFixed(4) 
-                                    +  " fcb:" + market.fcb.toFixed(4) 
-                                    +  " fcr:" + market.fcr.toFixed(4) 
-                                    +  " mrp: " + (10000*(market.maxMarginRatio - perpmr.toNumber())).toFixed() ) }
+                                    +  " fcb:" + market.fcb
+                                    +  " fcr:" + market.fcr.toFixed(4)) }
         //TODO.OPTIMIZE: if (perppnl < 0 ) { return }
         if (freec < config.TP_MIN_FREE_COLLATERAL ) { return }
         // we only scale if one sided market to avoid drift scaling 
@@ -2005,7 +2005,7 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
     
         //--- fcr check to proceed. should be the only check
         if (market.fcr <  config.SCALE_MIN_FCR) {
-            console.log(new Date().toLocaleString() + " : INFO: " + market.name + " Insufficient FCR to scale")
+            //console.log(new Date().toLocaleString() + " : INFO: " + market.name + " Insufficient FCR to scale")
             return
         }
 

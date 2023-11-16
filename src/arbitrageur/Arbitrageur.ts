@@ -1136,7 +1136,7 @@ async getPosVal(leg: Market): Promise<Number> {
     // open was successful. update pricing
         let scoll = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
         console.warn("WARN: using twap based getAccountValue to compute basis. FIXME!")
-        console.log(console.log(new Date().toLocaleString() + "INFO: DOWNSIZING " + mkt.name + "to: " + size))
+        console.log(console.log(new Date().toLocaleString() + " INFO: DOWNSIZING " + mkt.name + "by: " + size.toFixed(2)))
 
         mkt.fcb = (await this.perpService.getFreeCollateral(mkt.wallet.address)).toNumber()
         mkt.fcr = 1 // we just opened
@@ -2045,7 +2045,7 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
             
             try { // offset open
                 await this.offsetSZ(market, offsetsz) 
-                console.log(Date.now() + " INFO: SCALE " + market.name + " mr: " + perpmr.toFixed(4) +  
+                console.log(Date.now() + " INFO: DOWNSCALE " + market.name + " mr: " + perpmr.toFixed(4) +  
                                       " usdamnt: " + offsetsz.toFixed(4)) 
             } catch { console.log(Date.now() + ", maxMargin Failed Open,  " +  market.name ) }
             // compute next maxMarginRatio: post scale mr + step increment

@@ -1112,6 +1112,46 @@ async getPosVal(leg: Market): Promise<Number> {
     return (pos != 0)
  }
 
+ async offsetSZ(mkt: Market, size: number ) {
+    if (config.DEBUG_FLAG) {
+        console.log("DEBUG: open: " + mkt.name + " " + size)
+        return
+    }
+    let offsetSide = mkt.name.endsWith("SHORT") ? Side.LONG : Side.SHORT
+    try {
+        await this.openPosition(mkt.wallet, mkt.baseToken ,offsetSide ,AmountType.BASE,Big(size),broverrides,undefined,undefined)
+     }
+    catch (e: any) {
+        console.error(mkt.name + ` ERROR: FAILED OPEN. Rotating endpoint: ${e.toString()}`)
+        this.ethService.rotateToNextEndpoint()
+        try {
+            await this.openPosition(mkt.wallet,mkt.baseToken,offsetSide,AmountType.BASE, Big(size),broverrides,undefined,undefined)
+            console.log(Date.now() + " " + mkt.name + " INFO: Re-opened...")
+        } catch (e: any) {
+            console.error(mkt.name + `: ERROR: FAILED SECOND OPEN: ${e.toString()}`)
+            console.log(Date.now() + "," + mkt.name + ",FAIL: second reopen failed")
+            throw e
+        }
+    }
+    // open was successful. update pricing
+        let scoll = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
+        console.warn("WARN: using twap based getAccountValue to compute basis. FIXME!")
+        console.log(console.log(new Date().toLocaleString() + "INFO: DOWNSIZING " + mkt.name + "to: " + size))
+
+        mkt.fcb = (await this.perpService.getFreeCollateral(mkt.wallet.address)).toNumber()
+        mkt.fcr = 1 // we just opened
+
+        mkt.idxBasisCollateral = scoll
+        mkt.startCollateral = scoll
+           // update mkt.size and mkt.basis using pool latest price
+           //let sz = (await this.perpService.getTotalPositionSize(mkt.wallet.address, mkt.baseToken)).toNumber()
+           //TODO.DEBT ensure is not undefined
+           //let price = Math.pow(1.001, this.poolState[mkt.tkr].tick!)
+           //this.marketMap[mkt.name].openMark = price
+           // update startSize if first open or was open at restart
+           //if (mkt.startSize == null) { mkt.startSize = sz }
+           // make sure to null on close
+ }
 
  async open(mkt: Market, usdAmount: number ) {
     if (config.DEBUG_FLAG) {
@@ -1161,7 +1201,7 @@ async getPosVal(leg: Market): Promise<Number> {
            // make sure to null on close
  }
 
- // close sort of dtor. do all bookeeping and cleanup here
+  // close sort of dtor. do all bookeeping and cleanup here
  //REFACTOR: this.close(mkt) will make it easier for functinal styling
  // onClose startCollateral == basisCollateral == settledCollatOnClose
 // re-implement provderRotationLogic
@@ -1981,6 +2021,39 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
     return check 
   }
 
+  async downScaleCheck(market: Market) {
+    if ( !(await this.isNonZeroPos(market)) ) {return}
+         
+    let perpmr = await this.perpService.getMarginRatio(market.wallet.address)
+        if (!perpmr) {  throw new Error(market.name + " FAIL: pmr null in maxMaxMarginRatioCheck")}
+       
+        if ( perpmr.toNumber() < config.TP_MIN_MARGIN_RATIO ) {
+            // get the current size and cut by TP_DELEVERAGE_FACTOR
+            let sz = (await this.perpService.getTotalPositionSize(market.wallet.address, market.baseToken)).toNumber()
+            let offsetsz = Math.abs(sz*config.TP_DELEVERAGE_FACTOR)
+
+            // TODO: avoid EX_OPLAS by checking dollar value you are trying to offset
+            let px = (await this.perpService.getMarketPrice(market.poolAddr)).toNumber()
+            let usdvalue = px*offsetsz
+
+            // check size to avoid runaway-chainre inhibitor EX_OPLAS. Todo change to
+            //let usdAmount = Math.min(freec*scale*config.TP_EXECUTION_HAIRCUT, config.TP_MAX_OPEN_SZ_USD) AND dont step increase
+            if (usdvalue > config.TP_MAX_OPEN_SZ_USD) { 
+                offsetsz = config.TP_MAX_OPEN_SZ_USD/px
+                console.log(Date.now() + " INFO: " + market.name + "MAX_SZ: " + offsetsz  )
+             }
+            
+            try { // offset open
+                await this.offsetSZ(market, offsetsz) 
+                console.log(Date.now() + " INFO: SCALE " + market.name + " mr: " + perpmr.toFixed(4) +  
+                                      " usdamnt: " + offsetsz.toFixed(4)) 
+            } catch { console.log(Date.now() + ", maxMargin Failed Open,  " +  market.name ) }
+            // compute next maxMarginRatio: post scale mr + step increment
+            //let postscalemr = await this.perpService.getMarginRatio(market.wallet.address)
+        }
+        market.currMargin = perpmr.toNumber()
+    }
+
   async ratchedMaxLeverageTriggerCheck(market: Market) {
     const MAX_LEVERAGE = 4  //haircust will be applied
         if ( !(await this.isNonZeroPos(market)) ) {return}
@@ -2335,11 +2408,13 @@ async BKPscratchCheck() {
 //-------this.mktDirectionChangeCheck()  // asses direction. WAKEUP deps on this
       // MMR. maximum margin RESET check
     await this.scratchCheck(market)  
+    await this.downScaleCheck(market)
     await this.ratchedMaxLeverageTriggerCheck(market) 
     //await this.maxMaxMarginRatioCheck(market)
     await this.wakeUpCheck(market) //wakeup only favored leg if sided mkt else both
 
   }
+ 
   //---------------- end of routine  -----------------------------------------------------
 // last timestamp from routine, gets updated after this funcs completes
   evtNodeCheck(latestTimestamp: Timestamp) {

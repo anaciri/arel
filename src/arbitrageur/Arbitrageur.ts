@@ -1136,7 +1136,7 @@ async getPosVal(leg: Market): Promise<Number> {
     // open was successful. update pricing
         let scoll = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
         console.warn("WARN: using twap based getAccountValue to compute basis. FIXME!")
-        console.log(console.log(new Date().toLocaleString() + " INFO: DOWNSIZING " + mkt.name + "by: " + size.toFixed(2)))
+        console.warn(console.log(new Date().toLocaleString() + " INFO: DOWNSIZING " + mkt.name + " by: " + size.toFixed(2)))
 
         mkt.fcb = (await this.perpService.getFreeCollateral(mkt.wallet.address)).toNumber()
         mkt.fcr = 1 // we just opened
@@ -1869,6 +1869,7 @@ async putMktToSleep(mkt: Market) {
             const MOVEME_MAX_MARGIN = 0.999
             const MOVEME_FACTORY_RESET_MARGIN = 0.40
             mkt.resetMargin = MOVEME_FACTORY_RESET_MARGIN
+            //TODO.FIX. no need to reset not being changed
             mkt.maxMarginRatio = mkt.resetMargin + config.TP_MARGIN_STEP_INC
             //mkt.resetMargin = Math.min(mkt.resetMargin + config.TP_MARGIN_STEP_INC, MOVEME_MAX_MARGIN)
     console.log(tstmp + ": INFO: Kill " + mkt.name + ", stldcoll: " + settledCol.toFixed(4) + " oldcoll: " + oldStartCol.toFixed(4))
@@ -2045,8 +2046,7 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
             
             try { // offset open
                 await this.offsetSZ(market, offsetsz) 
-                console.log(Date.now() + " INFO: DOWNSCALE " + market.name + " mr: " + perpmr.toFixed(4) +  
-                                      " usdamnt: " + offsetsz.toFixed(4)) 
+                //console.log(Date.now() + " INFO: DOWNSCALE " + market.name + " mr: " + perpmr.toFixed(4) +  " usdamnt: " + offsetsz.toFixed(4)) 
             } catch { console.log(Date.now() + ", maxMargin Failed Open,  " +  market.name ) }
             // compute next maxMarginRatio: post scale mr + step increment
             //let postscalemr = await this.perpService.getMarginRatio(market.wallet.address)
@@ -2054,94 +2054,35 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
         market.currMargin = perpmr.toNumber()
     }
 
-  async ratchedMaxLeverageTriggerCheck(market: Market) {
-    const MAX_LEVERAGE = 4  //haircust will be applied
-        if ( !(await this.isNonZeroPos(market)) ) {return}
-        
-    //TODO.OPTIMIZE remove perpnl not used
-        //let perppnl = (await this.perpService.getUnrealizedPnl(market.wallet.address)).toNumber()
-        let perpmr = await this.perpService.getMarginRatio(market.wallet.address)
-        if (!perpmr) {  throw new Error(market.name + " FAIL: pmr null in maxMaxMarginRatioCheck")}
-
-        let freec = (await this.perpService.getFreeCollateral(market.wallet.address)).toNumber()
-        market.fcr = 1 + ((freec-market.fcb)/market.fcb)
-       
-        if (config.TRACE_FLAG) { console.log("TRACE: " + market.name + " perpmr:" + perpmr.toFixed(4) 
-                                    +  " mrp: " + (10000*(market.maxMarginRatio - perpmr.toNumber())).toFixed()
-                                    +  " maxmr:" + market.maxMarginRatio.toFixed(4) +  " freec:" + freec.toFixed(4) 
-                                    +  " fcb:" + market.fcb
-                                    +  " fcr:" + market.fcr.toFixed(4)) }
-        //TODO.OPTIMIZE: if (perppnl < 0 ) { return }
-        if (freec < config.TP_MIN_FREE_COLLATERAL ) { return }
-        // we only scale if one sided market to avoid drift scaling 
-        if (this.capflow == Direction.NEUTRAL)  { return }
-    
-        //--- fcr check to proceed. should be the only check
-        if (market.fcr <  config.SCALE_MIN_FCR) {
-            //console.log(new Date().toLocaleString() + " : INFO: " + market.name + " Insufficient FCR to scale")
-            return
-        }
-
-        // -------------- REMOVE THIS LOGIC. USE fcr instead. mr should be kept fixed to increas stability
-        if ( perpmr.toNumber() > market.maxMarginRatio ) {
-            // scale to current maxMarginRatio. to get higher leverage. TODO: asses if better to use current mr at lower lvrj
-            let scale = 1/market.maxMarginRatio
-            //let scale = 1/market.basisMargin
-            // check if I can fastract scale to MAX_LEVERAGE
-            let urets = market.side == Side.LONG ? (await this.getOpenLegUrets()).uretLongs
-                                                 : (await this.getOpenLegUrets()).uretShorts
-            // uret in only null if NOT open ie possize  exacltily 0 so it wont go to neither shorts or lngs
-            if (urets.filter((uret) => uret! > config.TP_QRM_MIN_RET).length >= config.TP_QRM_FOR_MAX_LEVERAGE) { 
-                console.log(Date.now() + " INFO: SCALE 2 MAXMR " + market.name + " mr: " + market.currMargin.toFixed(4))
-                scale = MAX_LEVERAGE }
-            /*else { //snap, just the step increment
-                let newmr = Math.max(market.basisMargin - config.TP_MARGIN_STEP_INC, 1/MAX_LEVERAGE)
-                scale = 1/newmr
-            }*/
-            // ok. scale settled ready to open
-            let usdAmount = freec*scale*config.TP_EXECUTION_HAIRCUT
-            // check size to avoid runaway-chainre inhibitor EX_OPLAS. Todo change to
-            //let usdAmount = Math.min(freec*scale*config.TP_EXECUTION_HAIRCUT, config.TP_MAX_OPEN_SZ_USD) AND dont step increase
-            if (usdAmount > config.TP_MAX_OPEN_SZ_USD) { 
-                usdAmount = config.TP_MAX_OPEN_SZ_USD
-                console.log(Date.now() + " INFO: " + market.name + "MAX_USD_SZ: " + usdAmount  )
-             }
-            try {  
-                await this.open(market, usdAmount) 
-                console.log(Date.now() + " INFO: SCALE " + market.name + " mr: " + perpmr.toFixed(4) +  
-                                      " usdamnt: " + usdAmount.toFixed(4) + " freec: " + freec.toFixed(4)) 
-            } catch { console.log(Date.now() + ", maxMargin Failed Open,  " +  market.name ) }
-            // compute next maxMarginRatio: post scale mr + step increment
-            let postscalemr = await this.perpService.getMarginRatio(market.wallet.address)
-            if (postscalemr && (usdAmount < config.TP_MAX_OPEN_SZ_USD)) {  
-                market.maxMarginRatio = Math.min(postscalemr.toNumber() + config.TP_MARGIN_STEP_INC, 1)
-            }
-            else { // couldnt get current mr. keep both unchanged but warn
-                console.log(Date.now() + " WARN: " + market.name + " FAIL: maxmarging unchaged. getMarginRatio null")
-                console.log(Date.now() + " WARN: " + market.name + " scale failed. postcale margin: " + postscalemr )
-            }
-            
-        }
-        market.currMargin = perpmr.toNumber()
-    }
     async BKPratchedMaxLeverageTriggerCheck(market: Market) {
-        const MAX_LEVERAGE = 10  //haircust will be applied
+        const MAX_LEVERAGE = 4  //haircust will be applied
             if ( !(await this.isNonZeroPos(market)) ) {return}
+            
         //TODO.OPTIMIZE remove perpnl not used
             //let perppnl = (await this.perpService.getUnrealizedPnl(market.wallet.address)).toNumber()
             let perpmr = await this.perpService.getMarginRatio(market.wallet.address)
             if (!perpmr) {  throw new Error(market.name + " FAIL: pmr null in maxMaxMarginRatioCheck")}
     
             let freec = (await this.perpService.getFreeCollateral(market.wallet.address)).toNumber()
+            market.fcr = 1 + ((freec-market.fcb)/market.fcb)
+           
             if (config.TRACE_FLAG) { console.log("TRACE: " + market.name + " perpmr:" + perpmr.toFixed(4) 
+                                        +  " mrp: " + (10000*(market.maxMarginRatio - perpmr.toNumber())).toFixed()
                                         +  " maxmr:" + market.maxMarginRatio.toFixed(4) +  " freec:" + freec.toFixed(4) 
-                                        +  " mrp: " + (10000*(market.maxMarginRatio - perpmr.toNumber())).toFixed() ) }
+                                        +  " fcb:" + market.fcb
+                                        +  " fcr:" + market.fcr.toFixed(4)) }
             //TODO.OPTIMIZE: if (perppnl < 0 ) { return }
             if (freec < config.TP_MIN_FREE_COLLATERAL ) { return }
             // we only scale if one sided market to avoid drift scaling 
             if (this.capflow == Direction.NEUTRAL)  { return }
         
-            // check if crossed threshold. two tracks regular track LEV_INC or fastrack to MAX_LEVERAGE
+            //--- fcr check to proceed. should be the only check
+            if (market.fcr <  config.SCALE_MIN_FCR) {
+                //console.log(new Date().toLocaleString() + " : INFO: " + market.name + " Insufficient FCR to scale")
+                return
+            }
+    
+            // -------------- REMOVE THIS LOGIC. USE fcr instead. mr should be kept fixed to increas stability
             if ( perpmr.toNumber() > market.maxMarginRatio ) {
                 // scale to current maxMarginRatio. to get higher leverage. TODO: asses if better to use current mr at lower lvrj
                 let scale = 1/market.maxMarginRatio
@@ -2149,7 +2090,7 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
                 // check if I can fastract scale to MAX_LEVERAGE
                 let urets = market.side == Side.LONG ? (await this.getOpenLegUrets()).uretLongs
                                                      : (await this.getOpenLegUrets()).uretShorts
-                // WARNING. Expecting uret to be non-null
+                // uret in only null if NOT open ie possize  exacltily 0 so it wont go to neither shorts or lngs
                 if (urets.filter((uret) => uret! > config.TP_QRM_MIN_RET).length >= config.TP_QRM_FOR_MAX_LEVERAGE) { 
                     console.log(Date.now() + " INFO: SCALE 2 MAXMR " + market.name + " mr: " + market.currMargin.toFixed(4))
                     scale = MAX_LEVERAGE }
@@ -2157,8 +2098,14 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
                     let newmr = Math.max(market.basisMargin - config.TP_MARGIN_STEP_INC, 1/MAX_LEVERAGE)
                     scale = 1/newmr
                 }*/
-                // ok. scale settled ready to opend
+                // ok. scale settled ready to open
                 let usdAmount = freec*scale*config.TP_EXECUTION_HAIRCUT
+                // check size to avoid runaway-chainre inhibitor EX_OPLAS. Todo change to
+                //let usdAmount = Math.min(freec*scale*config.TP_EXECUTION_HAIRCUT, config.TP_MAX_OPEN_SZ_USD) AND dont step increase
+                if (usdAmount > config.TP_MAX_OPEN_SZ_USD) { 
+                    usdAmount = config.TP_MAX_OPEN_SZ_USD
+                    console.log(Date.now() + " INFO: " + market.name + "MAX_USD_SZ: " + usdAmount  )
+                 }
                 try {  
                     await this.open(market, usdAmount) 
                     console.log(Date.now() + " INFO: SCALE " + market.name + " mr: " + perpmr.toFixed(4) +  
@@ -2166,28 +2113,65 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
                 } catch { console.log(Date.now() + ", maxMargin Failed Open,  " +  market.name ) }
                 // compute next maxMarginRatio: post scale mr + step increment
                 let postscalemr = await this.perpService.getMarginRatio(market.wallet.address)
-                if (postscalemr) {  
+                if (postscalemr && (usdAmount < config.TP_MAX_OPEN_SZ_USD)) {  
                     market.maxMarginRatio = Math.min(postscalemr.toNumber() + config.TP_MARGIN_STEP_INC, 1)
                 }
                 else { // couldnt get current mr. keep both unchanged but warn
                     console.log(Date.now() + " WARN: " + market.name + " FAIL: maxmarging unchaged. getMarginRatio null")
                     console.log(Date.now() + " WARN: " + market.name + " scale failed. postcale margin: " + postscalemr )
                 }
-                //market.maxMarginRatio = Math.max(market.maxMarginRatio - config.TP_MARGIN_STEP_INC, 1/MAX_LEVERAGE)
-                /*let postscalemr = await this.perpService.getMarginRatio(market.wallet.address)
-                if (postscalemr) {  // mr should be lower than basis mr since we added freec to our position
-                    market.basisMargin = postscalemr.toNumber() 
-                    // update max margin increasing from latest basis with a max of 1 (no leverage)
-                    market.maxMarginRatio = Math.min(market.basisMargin + config.TP_MARGIN_STEP_INC, 1)
-                }
-                else { // couldnt get current mr. keep both unchanged but warn
-                    console.warn(Date.now() + " WARN: " + market.name + " FAIL: getMarginRatio null using")
-                    console.log(Date.now() + " WARN: " + market.name + " postcale margin: " + postscalemr )
-                }*/
-                // update basis margin. if null use 1/scale
+                
             }
             market.currMargin = perpmr.toNumber()
-        }
+        }  
+  async scaleUpCheck(market: Market) {
+        if ( !(await this.isNonZeroPos(market)) ) {return}
+
+        let perpmr = await this.perpService.getMarginRatio(market.wallet.address)
+        if (!perpmr) {  throw new Error(market.name + " FAIL: pmr null in maxMaxMarginRatioCheck")}
+
+        let freec = (await this.perpService.getFreeCollateral(market.wallet.address)).toNumber()
+        //scratch fcr idea
+        //market.fcr = 1 + ((freec-market.fcb)/market.fcb)
+        if (config.TRACE_FLAG) { console.log("TRACE: " + market.name + " perpmr:" + perpmr.toFixed(4) 
+                                    +  " mrp: " + (10000*(market.maxMarginRatio - perpmr.toNumber())).toFixed()
+                                    +  " maxmr:" + market.maxMarginRatio.toFixed(4) +  " freec:" + freec.toFixed(4)) 
+                                }
+        //TODO.OPTIMIZE: if (perppnl < 0 ) { return }
+        if (freec < config.TP_MIN_FREE_COLLATERAL ) { return }
+        // we only scale if one sided market to avoid drift scaling 
+        if (this.capflow == Direction.NEUTRAL)  { return }
+    
+        if ( perpmr.toNumber() > market.maxMarginRatio ) {
+            // scale to current maxMarginRatio. to get higher leverage. TODO: asses if better to use current mr at lower lvrj
+            let scale = 1/market.maxMarginRatio
+            let usdAmount = freec*scale*config.TP_EXECUTION_HAIRCUT
+
+            // cap amound to avoid runaway-chainre inhibitor EX_OPLAS. 
+            if (usdAmount > config.TP_MAX_OPEN_SZ_USD) { 
+                usdAmount = config.TP_MAX_OPEN_SZ_USD
+                console.log(Date.now() + " INFO: " + market.name + "MAX_USD_SZ: " + usdAmount  )
+            }
+            try {  
+                await this.open(market, usdAmount) 
+                console.log(Date.now() + " INFO: SCALE " + market.name + " mr: " + perpmr.toFixed(4) +  
+                                      " usdamnt: " + usdAmount.toFixed(4) + " freec: " + freec.toFixed(4)) 
+            } catch { console.log(Date.now() + ", maxMargin Failed Open,  " +  market.name ) }
+            // compute next maxMarginRatio: post scale mr + step increment
+            //let postscalemr = await this.perpService.getMarginRatio(market.wallet.address)
+
+            /*if (postscalemr && (usdAmount < config.TP_MAX_OPEN_SZ_USD)) {  
+                market.maxMarginRatio = Math.min(postscalemr.toNumber() + config.TP_MARGIN_STEP_INC, 1)
+            }
+            else { // couldnt get current mr. keep both unchanged but warn
+                console.log(Date.now() + " WARN: " + market.name + " FAIL: maxmarging unchaged. getMarginRatio null")
+                console.log(Date.now() + " WARN: " + market.name + " scale failed. postcale margin: " + postscalemr )
+            }*/
+            
+        }// TODO.FIX.RMV currMargin not used
+        //market.currMargin = perpmr.toNumber()
+    }
+  
 //DEPRECATED
 /*
 async kellyMaxLeverageTriggerCheck(market: Market) {
@@ -2409,7 +2393,8 @@ async BKPscratchCheck() {
       // MMR. maximum margin RESET check
     await this.scratchCheck(market)  
     await this.downScaleCheck(market)
-    await this.ratchedMaxLeverageTriggerCheck(market) 
+    await this.scaleUpCheck(market)
+    //await this.ratchedMaxLeverageTriggerCheck(market) 
     //await this.maxMaxMarginRatioCheck(market)
     await this.wakeUpCheck(market) //wakeup only favored leg if sided mkt else both
 

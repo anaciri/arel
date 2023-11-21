@@ -2325,7 +2325,7 @@ async ensureSwapListenersOK(): Promise<void> {
   }
 
   async scratchCheck(market: Market) {
-    // buzzer went offn?
+    // buzzer went offn? buzzer counts time since exiting FastMarket regime
     if (this.normalRegimeStart == null) return;
     let now = Date.now()
     const nrtime = now - this.normalRegimeStart
@@ -2334,7 +2334,7 @@ async ensureSwapListenersOK(): Promise<void> {
     
     if (market.uret !== null && market.uret < config.MIN_LOSS_BUZZ) {
         this.marketMap[market.name].uret = null
-        console.log(new Date().toLocaleDateString() + " INFO: SCRATCHING " + market.name)
+        console.log(new Date().toLocaleDateString() + " INFO: ROLL ending " + market.name)
         // check that you do need to close
         if ( await this.isNonZeroPos( market) ) {
             await this.putMktToSleep(market)
@@ -2385,21 +2385,62 @@ async BKPscratchCheck() {
     // now that cycle events delta. first things first.check for TP_MAX_LOSS
     if ( await this.maxLossCheckAndStateUpd(market) ) {   // have a positive => close took place. check for qrom crossing
         await this.putMktToSleep(market)
-        // >>>>>>>>>>>>>> UNCOMMENT THIS TO ENABLE SOLIDARITY KILL
-        //await this.solidarityKill(market.side)  WARN: diabling until fix return
+    // >>>>>>>>>>>>>> UNCOMMENT THIS TO ENABLE SOLIDARITY KILL
+    //await this.solidarityKill(market.side)  WARN: diabling until fix return
     }
     //this.checkOnPoolSubEmptyBucket() //<========================== poolSubChecknPullBucket
-//-------this.mktDirectionChangeCheck()  // asses direction. WAKEUP deps on this
       // MMR. maximum margin RESET check
     await this.scratchCheck(market)  
-    await this.downScaleCheck(market)
-    await this.scaleUpCheck(market)
+    //ALERT. commenting out scaling/downscale while testing MSD
+    //await this.downScaleCheck(market)
+    //await this.scaleUpCheck(market)
     //await this.ratchedMaxLeverageTriggerCheck(market) 
     //await this.maxMaxMarginRatioCheck(market)
+    //---- rebalance check
+    await this.buzzerCheck()
     await this.wakeUpCheck(market) //wakeup only favored leg if sided mkt else both
 
   }
- 
+  async buzzerCheck() {
+    // how long since buzzer started. NOTE: buzzer starts after you exit FM i.e how long out of FM
+    // buzzer went offn? buzzer counts time since exiting FastMarket regime
+    if (this.normalRegimeStart == null) return;
+    let now = Date.now()
+    const nrtime = now - this.normalRegimeStart
+    if (nrtime < 1000*config.MAX_NORMALREGIME_BUZZ_SECS) return;
+    // BUZZ went off => 1) close everything 2) rebalance
+    
+    // --- factor out?: rebalance ---
+    // loop thru markets if closed get freec if not close then update freecolater
+    let collat: Record<string, number> = {}
+    for (const leg in this.marketMap) {
+        let mkt = this.marketMap[leg]
+        if ( await this.isNonZeroPos( mkt) ) { await this.putMktToSleep(mkt) }
+        let fc = (await this.perpService.getFreeCollateral(mkt.wallet.address)).toNumber()
+        // save in leg/fc data structure
+        collat[leg] = fc
+    }
+
+    // get the new seed (average)
+    let totalCollat: number = Object.values(collat).reduce((total, value) => total + value, 0);
+    let newsize = totalCollat/Object.keys(this.marketMap).length
+    
+    // loop through collat. Calculate the newsize delta for each leg
+    // if absolute delta lt TP_MIN_FREEC ignore. if positive call  withdraw(delta) else deposit(delta)
+    
+    for (const leg in collat) {
+            let delta = collat[leg] - newsize
+            if (Math.abs(delta) < config.TP_MIN_FREE_COLLATERAL) { continue }
+            let mkt = this.marketMap[leg]
+            // Call withdraw(delta) if delta is positive, else call deposit(delta)
+            if (delta < 0) { await this.deposit( mkt.wallet, Big(Math.abs(delta))) } 
+            else { 
+                console.warn("add withdrawl to botservice version")
+                console.log(new Date().toLocaleDateString() + leg + " Manual Withdraw " + delta )
+                //await this.<botservice>withdraw_AYB(-delta); // Pass the positive value to deposit
+            }
+    }
+}
   //---------------- end of routine  -----------------------------------------------------
 // last timestamp from routine, gets updated after this funcs completes
   evtNodeCheck(latestTimestamp: Timestamp) {

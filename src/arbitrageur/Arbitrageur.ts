@@ -26,6 +26,7 @@ import { dbgnow } from "../dbg/crocDebug"
 import { parse } from 'csv-parse';
 import { getHeapSnapshot } from "v8"
 import { readFileSync } from 'fs';
+import { kill } from "process"
 // this value will be overitten in setGasPx
 const INITIAL_MAX_GAS_GWEI = "2"
 
@@ -1447,8 +1448,83 @@ async computeKellyLeverage() {
 }
 */
 //----------------------------------
-// wakeUpCheck
+// wakeUpCheck: open straddle on dlt jump
 //-----
+async stradleWakeCheck(mkt: Market): Promise<boolean> { 
+    const MAX_LEVERAGE  = 9.96
+    // return if no new data or no new data i.e older than 1 cyle
+    let ts = this.poolState[mkt.tkr].cycleTickDeltaTs
+    let now = Date.now()
+    let cutoff = now - config.PRICE_CHECK_INTERVAL_SEC*1000
+if (config.TRACE_FLAG) { console.log(now + " TRACE: wakeUpCheck: " + mkt.tkr + " ctickDlt: " + ts + " cutoff: " + cutoff ) }
+    if (this.poolState[mkt.tkr].cycleTickDeltaTs < cutoff ) { return false }
+    
+    let tickDelta = this.poolState[mkt.tkr].cycleTickDelta
+
+    // if absolute tickDelta too small dont bother
+if (config.TRACE_FLAG) { console.log(new Date().toLocaleString() + " TRACE: wakeUpCheck: " + mkt.tkr + " tkdlt: " + tickDelta.toFixed()) }
+
+    if (Math.abs(tickDelta) < mkt.longEntryTickDelta) { return false }
+    // wakeup only if ge CORR_MIN_COUNT default half of enabled markets + 1. should always be gt half otherwise dont make sense to say 
+    // the market is swapping in our out direction
+    // CORR_COUNTS MUST be > half of all markets
+    if ( this.capflow == Direction.NEUTRAL) { return false }
+    
+  // wake up long/sThort on tick inc
+    if ( (mkt.side == Side.LONG) && (tickDelta > mkt.longEntryTickDelta) ) {
+        let pos = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
+        
+        // check if position already open first
+        if(!pos) { 
+                // compute factors
+                //let lkf = (await this.computeKellyFactors()).longKellyFactor
+                //let sz = mkt.startCollateral / mkt.resetMargin
+                let sz = Math.min(mkt.startCollateral / mkt.resetMargin, config.TP_MAX_OPEN_SZ_USD)
+                /*
+                let sz = mkt.startCollateral*lkf*MAX_LEVERAGE 
+                if (!lkf) { 
+                    //throw and error and log. error
+                    let err = " FAIL: kellyfactor zero in nonzero pos: " + mkt.name + " lfk: " + lkf
+                    console.error(err)
+                    throw (Date.now() + err )
+                 }*/
+            
+                try { await this.open(mkt,sz) }
+                catch(err) { console.error(Date.now() + mkt.name +  " OPEN FAILED in wakeUpCheck") }
+
+                let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
+                console.log(tstmp + " INFO: WAKEUP:" + mkt.name + " Dt:" + tickDelta.toFixed(4) + "usdamnt: " + sz.toFixed())
+                return true
+        }
+    }
+    else if ( (mkt.side == Side.SHORT) && (tickDelta < 0) && (Math.abs(tickDelta) > mkt.shortEntryTickDelta) ) {
+        // ensure not open aleady
+        let pos = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
+        if(!pos) { 
+            // compute factors
+            /*
+            let skf = (await this.computeKellyFactors()).shortKellyFactor
+            if (!skf) {
+                 //throw and error and log. error
+                 let err =  " FAIL: kellyfactor zero in nonzero pos: " + mkt.name + " skf: " + skf
+                 console.error(err)
+                 throw (Date.now() + err )
+                }
+             */
+            // replaced to handle EX_OPLAS
+            //let sz = mkt.startCollateral / mkt.resetMargin
+            let sz = Math.min(mkt.startCollateral / mkt.resetMargin, config.TP_MAX_OPEN_SZ_USD)
+       
+            try { await this.open(mkt,sz) }
+            catch(err) { console.error(Date.now() + mkt.name +  " OPEN FAILED in wakeUpCheck") }
+
+            let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
+            console.log(tstmp + " INFO: WAKEUP:" + mkt.name + " Dt:" + tickDelta.toFixed(4) + "usdamnt: " + sz.toFixed())
+            return true
+        }
+    }
+    return false
+}
 async wakeUpCheck(mkt: Market): Promise<boolean> { 
     const MAX_LEVERAGE  = 9.96
     // return if no new data or no new data i.e older than 1 cyle
@@ -1524,56 +1600,7 @@ if (config.TRACE_FLAG) { console.log(new Date().toLocaleString() + " TRACE: wake
     }
     return false
 }
-async BKPwakeUpCheck(mkt: Market): Promise<boolean> { 
-    // return if no new data or no new data i.e older than 1 cyle
-    let ts = this.poolState[mkt.tkr].cycleTickDeltaTs
-    let now = Date.now()
-    let cutoff = now - config.PRICE_CHECK_INTERVAL_SEC*1000
-if (config.TRACE_FLAG) { console.log(now + " TRACE: wakeUpCheck: " + mkt.tkr + " ctickDlt: " + ts + " cutoff: " + cutoff ) }
-    if (this.poolState[mkt.tkr].cycleTickDeltaTs < cutoff ) { return false }
-    
-    let tickDelta = this.poolState[mkt.tkr].cycleTickDelta
-    // if absolute tickDelta too small dont bother
-if (config.TRACE_FLAG) { console.log(now + " TRACE: wakeUpCheck: " + mkt.tkr + " tkdlt: " + tickDelta.toFixed()) }
-    if (Math.abs(tickDelta) < mkt.longEntryTickDelta) { return false }
-    
-  // wake up long/sThort on tick inc
-    let dir = this.holosSide
-    if ( (mkt.side == Side.LONG) && (tickDelta > mkt.longEntryTickDelta) && (dir == DeprecateDirection.TORO) ) {
-        let pos = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
-        let sz = mkt.startCollateral / mkt.resetMargin
-        try { 
-            if(!pos) { 
-                await this.open(mkt,sz)
-                let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
-                console.log(tstmp + " INFO: WAKEUP:" + mkt.name + " Dt:" + tickDelta)
-                return true
-             } 
-        }
-        catch(err) { console.error(Date.now() + mkt.name +  " OPEN FAILED in wakeUpCheck") }
-    }
-    else if ( (mkt.side == Side.SHORT) && (tickDelta < 0)
-                                       && (Math.abs(tickDelta) > mkt.shortEntryTickDelta) 
-                                       && (dir == DeprecateDirection.BEAR)) {
-        let pos = (await this.perpService.getTotalPositionValue(mkt.wallet.address, mkt.baseToken)).toNumber()
-        let sz = mkt.startCollateral / mkt.resetMargin
-        try {
-            if(!pos) {
-                await this.open(mkt,sz)
-                let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
-                console.log(tstmp + " INFO: WAKEUP:" + mkt.name + " Dt:" + tickDelta)
-                return true
-            }
-        }
-        catch(err) { console.error(Date.now() + mkt.name +  " OPEN FAILED in wakeUpCheck") }
-    }
 
-    if (tickDelta) {
-        console.log(this.holosSide + ": tickDelta:" + mkt.name + ": " + tickDelta)
-    }
-
-    return false
-}
 
 
 
@@ -1866,11 +1893,11 @@ async putMktToSleep(mkt: Market) {
             let ret = 1 + (settledCol-oldStartCol)/oldStartCol
             let tstmp = new Date(Date.now()).toLocaleTimeString([], {hour12: false})
             // bump up reset margin
-            const MOVEME_MAX_MARGIN = 0.999
-            const MOVEME_FACTORY_RESET_MARGIN = 0.40
-            mkt.resetMargin = MOVEME_FACTORY_RESET_MARGIN
+            
+            //const MOVEME_FACTORY_RESET_MARGIN = 0.40
+            //mkt.resetMargin = MOVEME_FACTORY_RESET_MARGIN
             //TODO.FIX. no need to reset not being changed
-            mkt.maxMarginRatio = mkt.resetMargin + config.TP_MARGIN_STEP_INC
+            //mkt.maxMarginRatio = mkt.resetMargin + config.TP_MARGIN_STEP_INC
             //mkt.resetMargin = Math.min(mkt.resetMargin + config.TP_MARGIN_STEP_INC, MOVEME_MAX_MARGIN)
     console.log(tstmp + ": INFO: Kill " + mkt.name + ", stldcoll: " + settledCol.toFixed(4) + " oldcoll: " + oldStartCol.toFixed(4))
 }
@@ -2397,11 +2424,96 @@ async BKPscratchCheck() {
     //await this.ratchedMaxLeverageTriggerCheck(market) 
     //await this.maxMaxMarginRatioCheck(market)
     //---- rebalance check
-    await this.buzzerCheck()
-    await this.wakeUpCheck(market) //wakeup only favored leg if sided mkt else both
+    await this.bernouillyFallsCheck()
+
+
+
+    //await this.wakeUpCheck(market) //wakeup only favored leg if sided mkt else both
 
   }
-  async buzzerCheck() {
+
+  async straddleReturn(tkr: string): Promise<Record<string, [number, number]>> {
+    // Get pnl for each leg and then returns based on basisCollateral
+    let pnll = (await this.perpService.getUnrealizedPnl(this.marketMap[tkr].wallet.address)).toNumber();
+    let pnls = (await this.perpService.getUnrealizedPnl(this.marketMap[tkr + '_SHORT'].wallet.address)).toNumber();
+
+    // Create a record with tkr and tkr+'_SHORT' as keys
+    return {
+       [tkr]: [ 1 + (pnll / this.marketMap[tkr].startCollateral), 1 + (pnls / this.marketMap[tkr + '_SHORT'].startCollateral) ]
+    };
+}
+
+  async bernouillyFallsCheck(): Promise<void> {
+      // actually should be called KellyPoint check. BF is already too late. goal is
+      // to avoid getting too close to BF, KP might be the optimom point. recall assimetry beyond 
+      // log unity point namely DMR where the compensation is slowing just as the falls are accelerating
+      // you were right there is asymetry but is against you :-) 
+      
+    let sizes:Record<string, [number, number] > = {}  // long/short convention
+    for (const tkr of this.enabledMarkets) {
+        let ll = this.marketMap[tkr]
+        let sl = this.marketMap[tkr+'_SHORT']
+        // find out the stradles amputed or alive
+        sizes[tkr] = [ (await this.perpService.getTotalPositionSize(ll.wallet.address, ll.baseToken)).toNumber(),
+                       (await this.perpService.getTotalPositionSize(sl.wallet.address, sl.baseToken)).toNumber()]
+      }
+      // check straddle with at least one leg alive
+      
+      const alive: string[] = Object.keys(sizes).filter(key => sizes[key][0] !== 0 || sizes[key][1] !== 0);
+
+      // who is too close to BF and close
+      let killed: string[] = []
+      for (const tkr of alive) {
+        let ll = this.marketMap[tkr]
+        let sl = this.marketMap[tkr+'_SHORT']  
+        let res = await this.straddleReturn(tkr)
+        const [lret, sret] = res[tkr]
+        if (lret < config.TP_MAX_ROLL_LOSS || sret < config.TP_MAX_ROLL_LOSS) { 
+            if ( await this.isNonZeroPos(ll) ) { await this.putMktToSleep(ll) }
+            if ( await this.isNonZeroPos(sl) ) { await this.putMktToSleep(sl) }
+            killed.push(tkr)
+        }
+        console.log(`RETURNS: tkr: ${tkr}, lret: ${lret.toFixed()}, sret: ${sret.toFixed()}`)
+      }
+      // rebalance the closed straddles 
+      for (const tkr of killed) {
+          await this.rebalanceStraddle(tkr)
+      }
+
+  }
+
+  async rebalanceStraddle(tkr: string) {
+  // get leg collateral. double check is close
+    let ll = this.marketMap[tkr] 
+    let sl = this.marketMap[tkr+'_SHORT'] 
+    
+    if ( await this.isNonZeroPos(ll) ) { await this.putMktToSleep(ll) }
+    let fcl = (await this.perpService.getFreeCollateral(ll.wallet.address)).toNumber()
+    if ( await this.isNonZeroPos(sl) ) { await this.putMktToSleep(sl) }
+    let fcs = (await this.perpService.getFreeCollateral(sl.wallet.address)).toNumber()
+
+    let newsize = (fcl + fcs)/2
+    let deltal = fcl - newsize
+    let deltas = fcs - newsize
+            
+    // withdraw(delta) if delta is positive, else call deposit(delta)
+    if (Math.abs(deltal) > config.TP_MIN_FREE_COLLATERAL) {
+        if (deltal < 0) { await this.deposit( ll.wallet, Big(Math.abs(deltal))) } 
+        if (deltal > 0) { 
+            console.warn("TODO: add withdrawl to botservice version")
+            console.log(new Date().toLocaleDateString() + sl.name + " Manual Withdraw " + deltal )
+        }
+    }
+    if (Math.abs(deltas) > config.TP_MIN_FREE_COLLATERAL) {
+        if (deltas < 0) { await this.deposit( ll.wallet, Big(Math.abs(deltal))) } 
+        if (deltas > 0) { 
+            console.warn("TODO: add withdrawl to botservice version")
+            console.log(new Date().toLocaleDateString() + sl.name + " Manual Withdraw " + deltas )
+        }
+    }
+}
+
+  async DEPRbuzzerCheck() {
     // how long since buzzer started. NOTE: buzzer starts after you exit FM i.e how long out of FM
     // buzzer went offn? buzzer counts time since exiting FastMarket regime
     if (this.normalRegimeStart == null) return;

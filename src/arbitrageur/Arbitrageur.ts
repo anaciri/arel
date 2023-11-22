@@ -2410,14 +2410,16 @@ async BKPscratchCheck() {
     this.setGasPx()
 
     // now that cycle events delta. first things first.check for TP_MAX_LOSS
+    /*
     if ( await this.maxLossCheckAndStateUpd(market) ) {   // have a positive => close took place. check for qrom crossing
         await this.putMktToSleep(market)
     // >>>>>>>>>>>>>> UNCOMMENT THIS TO ENABLE SOLIDARITY KILL
     //await this.solidarityKill(market.side)  WARN: diabling until fix return
     }
+    */
     //this.checkOnPoolSubEmptyBucket() //<========================== poolSubChecknPullBucket
       // MMR. maximum margin RESET check
-    await this.scratchCheck(market)  
+  //await this.scratchCheck(market)  
     //ALERT. commenting out scaling/downscale while testing MSD
     //await this.downScaleCheck(market)
     //await this.scaleUpCheck(market)
@@ -2473,7 +2475,7 @@ async BKPscratchCheck() {
             if ( await this.isNonZeroPos(sl) ) { await this.putMktToSleep(sl) }
             killed.push(tkr)
         }
-        console.log(`RETURNS: tkr: ${tkr}, lret: ${lret.toFixed()}, sret: ${sret.toFixed()}`)
+        console.log(`RETURNS: tkr: ${tkr}, lret: ${lret.toFixed(4)}, sret: ${sret.toFixed(4)}`)
       }
       // rebalance the closed straddles 
       for (const tkr of killed) {
@@ -2505,7 +2507,7 @@ async BKPscratchCheck() {
         }
     }
     if (Math.abs(deltas) > config.TP_MIN_FREE_COLLATERAL) {
-        if (deltas < 0) { await this.deposit( ll.wallet, Big(Math.abs(deltal))) } 
+        if (deltas < 0) { await this.deposit( sl.wallet, Big(Math.abs(deltas))) } 
         if (deltas > 0) { 
             console.warn("TODO: add withdrawl to botservice version")
             console.log(new Date().toLocaleDateString() + sl.name + " Manual Withdraw " + deltas )

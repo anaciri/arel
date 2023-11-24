@@ -2212,6 +2212,7 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
                                     +  " mrp: " + (10000*(market.maxMarginRatio - perpmr.toNumber())).toFixed()
                                     +  " maxmr:" + market.maxMarginRatio.toFixed(4) +  " freec:" + freec.toFixed(4)) 
                                 }
+        //TODO.OPTIMIZE: if (perppnl < 0 ) { return }
         if (freec < config.TP_MIN_FREE_COLLATERAL ) { return }
         // we only scale if one sided market to avoid drift scaling 
         //if (this.capflow == Direction.NEUTRAL)  { return }
@@ -2231,7 +2232,10 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
                 console.log(Date.now() + " INFO: SCALE " + market.name + " mr: " + perpmr.toFixed(4) +  
                                       " usdamnt: " + usdAmount.toFixed(4) + " freec: " + freec.toFixed(4)) 
             } catch { console.log(Date.now() + ", maxMargin Failed Open,  " +  market.name ) }
-        }
+            
+            
+        }// TODO.FIX.RMV currMargin not used
+        //market.currMargin = perpmr.toNumber()
     }
 
 async BKPmaxMaxMarginRatioCheck(market: Market) {
@@ -2435,9 +2439,9 @@ async BKPscratchCheck() {
     let ll = this.marketMap[tkr] 
     let sl = this.marketMap[tkr+'_SHORT'] 
     
-    if ( await this.isNonZeroPos(ll) ) { await this.putMktToSleep(ll) }
+    //if ( await this.isNonZeroPos(ll) ) { await this.putMktToSleep(ll) }
     let fcl = (await this.perpService.getFreeCollateral(ll.wallet.address)).toNumber()
-    if ( await this.isNonZeroPos(sl) ) { await this.putMktToSleep(sl) }
+    //if ( await this.isNonZeroPos(sl) ) { await this.putMktToSleep(sl) }
     let fcs = (await this.perpService.getFreeCollateral(sl.wallet.address)).toNumber()
 
     let newsize = (fcl + fcs)/2
@@ -2446,14 +2450,16 @@ async BKPscratchCheck() {
             
     // withdraw(delta) if delta is positive, else call deposit(delta)
     if (Math.abs(deltal) > config.TP_MIN_FREE_COLLATERAL) {
-        if (deltal < 0) { await this.deposit( ll.wallet, Big(Math.abs(deltal))) } 
+        if (deltal < 0) { await this.deposit( ll.wallet, Big(Math.abs(deltal)));
+        console.log("INFO: DEPOSIT") } 
         if (deltal > 0) { 
             console.warn("TODO: add withdrawl to botservice version")
             console.log(new Date().toLocaleDateString() + sl.name + " Manual Withdraw " + deltal )
         }
     }
     if (Math.abs(deltas) > config.TP_MIN_FREE_COLLATERAL) {
-        if (deltas < 0) { await this.deposit( sl.wallet, Big(Math.abs(deltas))) } 
+        if (deltas < 0) { await this.deposit( sl.wallet, Big(Math.abs(deltas))) ; 
+        console.log("INFO: DEPOSIT")} 
         if (deltas > 0) { 
             console.warn("TODO: add withdrawl to botservice version")
             console.log(new Date().toLocaleDateString() + sl.name + " Manual Withdraw " + deltas )

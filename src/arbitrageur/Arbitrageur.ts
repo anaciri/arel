@@ -9,7 +9,7 @@ import { UniswapV3Pool } from "@perp/common/build/types/ethers-uniswap"
 import BigNumber from 'bignumber.js';
 import Big from "big.js"
 import { ethers } from "ethers"
-import { first, max, padEnd, update, upperFirst } from "lodash"
+import { first, max, padEnd, update, upperFirst, zip } from "lodash"
 import { decode } from "punycode"
 import { Service } from "typedi"
 
@@ -1997,6 +1997,33 @@ async maxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
     return check 
   }
 
+  async HACK_OPT_KILL(): Promise<void> {
+    // check if any tkr has unrealized pnl of 0 /imperfect inference that is closed
+    let tkrs = [...this.enabledMarkets]
+
+    //ASSuming that if unrealized pnl = 0.0000 must be closed (race cond posible while closing stradle)
+    for (const t of tkrs) {
+        let l = (await this.perpService.getUnrealizedPnl(this.marketMap[t].wallet.address)).toNumber()
+        let s = (await this.perpService.getUnrealizedPnl(this.marketMap[t + '_SHORT'].wallet.address)).toNumber()
+        if (l*s !=0) { continue }// at least one (but not both) have to be zero
+        if (l == 0 && s ==0) { continue } // both legs close nothing to do
+        // one legged straddle, ASSuming is OPT could b GINC
+        let mkt = l != 0 ? this.marketMap[t] : this.marketMap[t + '_SHORT'] // both cant be zero
+        const icol = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
+    
+        //peak tick updated by eventInput procesor. they should match
+        if (icol > mkt.idxBasisCollateral) { mkt.idxBasisCollateral = icol }
+        let uret = 1 + (icol - mkt.idxBasisCollateral)/mkt.idxBasisCollateral
+
+        this.marketMap[mkt.name].uret = uret
+        if (uret < config.MIN_LOSS_BUZZ ) { 
+            await this.close(mkt)
+            console.log(new Date().toLocaleDateString() + " INFO: ENDING ROLL FOR " + mkt.name )
+        }// mark check positive 
+    }
+}
+   
+
 async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
     // skip if market inactive
     let check = false ; let markPnl = 0 ; let mret = null
@@ -2377,12 +2404,13 @@ async BKPscratchCheck() {
     //await this.maxMaxMarginRatioCheck(market)
     //---- rebalance check
     await this.bernouillyFallsCheck()
-
-
+    await this.HACK_OPT_KILL()
 
     //await this.wakeUpCheck(market) //wakeup only favored leg if sided mkt else both
 
   }
+
+
 
   async straddleReturn(tkr: string): Promise<Record<string, [number, number]>> {
     // Get pnl for each leg and then returns based on basisCollateral
@@ -2417,20 +2445,26 @@ async BKPscratchCheck() {
       let killed: string[] = []
       for (const tkr of alive) {
         let ll = this.marketMap[tkr]
-        let sl = this.marketMap[tkr+'_SHORT']  
+        let sl = this.marketMap[tkr +'_SHORT']  
         let res = await this.straddleReturn(tkr)
         const [lret, sret] = res[tkr]
         if (lret < config.TP_MAX_ROLL_LOSS || sret < config.TP_MAX_ROLL_LOSS) { 
             if ( await this.isNonZeroPos(ll) ) { await this.putMktToSleep(ll) }
             if ( await this.isNonZeroPos(sl) ) { await this.putMktToSleep(sl) }
             killed.push(tkr)
+            // remove from alive
+            alive.splice(alive.indexOf(tkr), 1);
         }
-        console.log(`RETURNS: tkr: ${tkr}, lret: ${lret.toFixed(4)}, sret: ${sret.toFixed(4)}`)
+        console.log(`RETURNS: tkr: ${tkr}, lret: ${lret.toFixed(4)}, sret: ${sret.toFixed(4)},
+                                   ${sizes[tkr][0].toFixed(2)}, ${sizes[tkr][1].toFixed(2)}}`)
       }
       // rebalance the closed straddles 
+      // HIDE. DEPOSITs do manually 
+      /*
       for (const tkr of killed) {
           await this.rebalanceStraddle(tkr)
       }
+      */
 
   }
 

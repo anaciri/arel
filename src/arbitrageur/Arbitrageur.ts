@@ -2455,8 +2455,7 @@ async BKPscratchCheck() {
             // remove from alive
             alive.splice(alive.indexOf(tkr), 1);
         }
-        console.log(`RETURNS: tkr: ${tkr}, lret: ${lret.toFixed(4)}, sret: ${sret.toFixed(4)},
-                                   ${sizes[tkr][0].toFixed(2)}, ${sizes[tkr][1].toFixed(2)}}`)
+        console.log(`RET: tkr:${tkr}, lret: ${lret.toFixed(4)}, sret: ${sret.toFixed(4)},${sizes[tkr][0].toFixed(2)}, ${sizes[tkr][1].toFixed(2)}}`)
       }
       // rebalance the closed straddles 
       // HIDE. DEPOSITs do manually 

@@ -9,13 +9,13 @@ import { UniswapV3Pool } from "@perp/common/build/types/ethers-uniswap"
 import BigNumber from 'bignumber.js';
 import Big from "big.js"
 import { ethers } from "ethers"
-import { first, max, padEnd, update, upperFirst, zip } from "lodash"
+import { endsWith, first, max, padEnd, update, upperFirst, zip } from "lodash"
 import { decode } from "punycode"
 import { Service } from "typedi"
 
 import * as fs from 'fs'
 import { tmpdir } from "os"
-import { time, timeStamp } from "console"
+import { info, time, timeStamp } from "console"
 import { Interface } from "readline"
 //import { IUniswapV3PoolEvents } from "@perp/IUniswapV3PoolEvents";
 import IUniswapV3PoolABI from '@uniswap/v3-core/artifacts/contracts/interfaces/IUniswapV3Pool.sol/IUniswapV3Pool.json'
@@ -27,6 +27,27 @@ import { parse } from 'csv-parse';
 import { getHeapSnapshot } from "v8"
 import { readFileSync } from 'fs';
 import { kill } from "process"
+import { kMaxLength } from "buffer"
+
+const LEXIT_THRESHOLD = 0; // Set your threshold value
+const TX_MINTED_WAIT_SEC = 3
+const MAX_DEVIATION_THRESHOLD = 1.2
+const MIN_DEVIATION_THRESHOLD = 0.8
+
+enum State {
+    OPEN = "OPEN",
+    OPENING = "OPENING",
+    CLOSING = "CLOSING",
+    CLOSE = "CLOSE",
+  }
+  
+  type PositionState = {
+    status: State;
+    timestamp: number; // You can use a specific type for timestamp, like `Date` or `number` based on your requirements
+  };
+  
+ 
+
 // this value will be overitten in setGasPx
 const INITIAL_MAX_GAS_GWEI = "2"
 
@@ -259,6 +280,7 @@ interface Market {
     initCollateral: number  // read from config aka seed
     twin: string
 //    peakCollateral: number
+    positionState: PositionState
     resetMargin: number
     basisMargin: number
     currMargin:number
@@ -597,11 +619,17 @@ if (config.TRACE_FLAG) { console.log(" TRACE: evt: " + tkr  + " " + timestamp + 
             if (!market.IS_ENABLED) { continue }
             //if (!market.IS_ENABLED) { continue }
             const pool = poolMap[marketName.split('_')[0]]
-            
+            const wlt = this.ethService.privateKeyToWallet(this.pkMap.get(marketName)!)
+            const sz = (await this.perpService.getTotalPositionSize(wlt.address, pool.baseAddress)).toNumber()
+            const initialState: PositionState = {
+                status: sz == 0 ? State.CLOSE : State.OPEN,
+                timestamp: Date.now() }
+              
             this.marketMap[marketName] = {
                 name: marketName,
                 tkr:marketName.split('_')[0],
-                wallet: this.ethService.privateKeyToWallet(this.pkMap.get(marketName)!),
+//                wallet: this.ethService.privateKeyToWallet(this.pkMap.get(marketName)!),
+                wallet: wlt,
                 side: marketName.endsWith("SHORT") ? Side.SHORT : Side.LONG,
                 baseToken: pool.baseAddress,
                 poolAddr: pool.address,
@@ -619,6 +647,7 @@ if (config.TRACE_FLAG) { console.log(" TRACE: evt: " + tkr  + " " + timestamp + 
                 fcr:1,  // when position is not open yest fcb == fc == deposited amount
                 idxBasisCollateral: market.START_COLLATERAL, // incl unrealized profit
                 wBasisCollateral: market.START_COLLATERAL, // same starting point as idx
+                positionState: initialState,
                 resetMargin: market.RESET_MARGIN,
                 basisMargin: market.RESET_MARGIN,
                 currMargin: market.RESET_MARGIN,
@@ -1997,11 +2026,89 @@ async maxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
     return check 
   }
 
-  async HACK_OPT_KILL(): Promise<void> {
+// check wire.csv file to determine if to lexit
+
+
+// get latest mean delta value from wire.csv selecting from last entry
+
+
+//TODO.OPTIMIZE to read last n lines from the file
+async getMeanDeltaForTicker(ticker: string): Promise<number | undefined> {
+  try {
+    const filePath = 'path/to/wire.csv';  // Replace with the actual file path
+    const content = await fs.promises.readFile(filePath, 'utf-8');
+    const lines = content.split('\n');
+
+    for (let i = lines.length - 2; i >= 0; i--) {
+      const line = lines[i].trim().split(',');
+
+      if (line.length === 7 && line[0] === ticker) {
+        return parseFloat(line[6]);
+      } else if (line.length !== 7) {
+        console.error(`Invalid CSV format in line ${i + 1}: ${lines[i]}`);
+      }
+    }
+  } catch (error) {
+    console.error('Error reading file:', error);
+  }
+
+  return undefined; // Return undefined if the ticker is not found in the file
+}
+
+// TOFIX handle openning transition also
+// it may take over 3 seconds for a close/open tx to be minted. CLOSING/OPEING states 
+// to prevent muliclose/open if loop cycle lt 3 minutes. For now just hundle CLOSING
+// for now just return warning
+
+_checkOnTransition(leg: string) {
+    //retrieve the leg state timestamp and see if exceeds 3.666 minutes
+    let mleg = this.marketMap[leg]
+    let ts = mleg.positionState.timestamp
+    // check if it has been more than typical tx minting time 
+    let now = Date.now()   
+    if ( now - ts > TX_MINTED_WAIT_SEC*1000 ) {
+        console.log("it has been " + (now - ts)/1000 + "waiting to close")
+        console.warn("Too long waitng to close")
+    }
+ }
+
+// csp lexitCheck
+async lexitCheck(): Promise<void> {
+    let tkrs = [...this.enabledMarkets]
+    
+    for (const t of tkrs) {
+        let longleg = this.marketMap[t]
+        let shortleg = this.marketMap[t+'_SHORT']
+        // check if they are transitioning (closing/opening)from previous cycle
+        if (longleg.positionState.status.endsWith('ING')) { this._checkOnTransition(t)}
+        if (shortleg.positionState.status.endsWith('ING')) {this._checkOnTransition(t)}
+        
+        // lexit: if either of the legs is NOT open, nothing to do. OPENING is ot considered OPEN
+        if (longleg.positionState.status != State.OPEN || shortleg.positionState.status != State.OPEN) { return }
+        // ok. both are open check the wire for a tker[signal] e.g ETH,meanDelta
+
+        let mdlta = await this.getMeanDeltaForTicker(t)
+      
+        if (mdlta! > MAX_DEVIATION_THRESHOLD) {  // i.e getting longer, close the short
+            // If heuristicSkew is less than the threshold, return the close functor
+            await this.close(longleg)
+            //FIXME.FOF state update should be inslde close function
+            longleg.positionState.status = State.CLOSING
+        }
+        if (mdlta! < MIN_DEVIATION_THRESHOLD) {  // i.e getting longer, close the short
+          // If heuristicSkew is less than the threshold, return the close functor
+          await this.close(shortleg);
+        } 
+    }
+}
+
+
+  async HACK_PEXIT(): Promise<void> {
     // check if any tkr has unrealized pnl of 0 /imperfect inference that is closed
     let tkrs = [...this.enabledMarkets]
 
     //ASSuming that if unrealized pnl = 0.0000 must be closed (race cond posible while closing stradle)
+    // it can take over 3 seconds to mint a close tx if routine is 1 minute u will be doing multiple kills
     for (const t of tkrs) {
         let l = (await this.perpService.getUnrealizedPnl(this.marketMap[t].wallet.address)).toNumber()
         let s = (await this.perpService.getUnrealizedPnl(this.marketMap[t + '_SHORT'].wallet.address)).toNumber()
@@ -2226,6 +2333,69 @@ async BKPmaxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
         //market.currMargin = perpmr.toNumber()
     }
   
+    // scale if stradl spread exceed limit
+    async mrScaleSpreadCheck(market: Market) {  //<--- untested code. deprecate
+        // avoid jumping too much here incresing chances of multi opens. only run for longs
+        
+        if (market.name.endsWith('_SHORT')) {return}
+        // twin will always be the short since we are only getting here when market is long
+        let tmarket = this.marketMap[market.twin]
+        let lsz = (await this.perpService.getTotalPositionSize(market.wallet.address, tmarket.baseToken)).toNumber()
+        let ssz = (await this.perpService.getTotalPositionSize(tmarket.wallet.address, tmarket.baseToken)).toNumber()
+       
+        // only run if both are nonzero
+        if ( !lsz && !ssz  ) {return}
+
+        let perpmr = await this.perpService.getMarginRatio(market.wallet.address)
+        if (!perpmr) {  throw new Error(market.name + " FAIL: pmr null in maxMaxMarginRatioCheck")}
+        
+
+        let tperpmr = await this.perpService.getMarginRatio(tmarket.wallet.address)
+        if (!tperpmr) {  throw new Error(market.name + " FAIL: pmr null in maxMaxMarginRatioCheck")}
+        let spread = perpmr.toNumber() - tperpmr.toNumber()
+
+        if ( Math.abs(spread)  < config.TP_MARGIN_STEP_INC ) {return}
+
+        let target = market  // assume is the long
+        let szzero = lsz
+        if (spread < 0) {  // market is the winning leg. nothing to do. if loser the scale the twin
+            target = tmarket //nope, scale the short
+            szzero = ssz
+        }
+
+        let freec = (await this.perpService.getFreeCollateral(target.wallet.address)).toNumber()
+
+        if (config.TRACE_FLAG) { console.log("TRACE: " + target.name + " perpmr:" + perpmr.toFixed(4) 
+                                    +  " mrp: " + (10000*(target.maxMarginRatio - perpmr.toNumber())).toFixed()
+                                    +  " maxmr:" + target.maxMarginRatio.toFixed(4) +  " freec:" + freec.toFixed(4)) 
+                                }
+        //TODO.OPTIMIZE: if (perppnl < 0 ) { return }
+
+        if (freec < config.TP_MIN_FREE_COLLATERAL ) { return }
+            // scale to current maxMarginRatio. to get higher leverage. TODO: asses if better to use current mr at lower lvrj
+            let scale = 1/target.maxMarginRatio
+            let usdAmount = freec*scale*config.TP_EXECUTION_HAIRCUT
+
+            // cap amound to avoid runaway-chainre inhibitor EX_OPLAS. 
+            if (usdAmount > config.TP_MAX_OPEN_SZ_USD) { 
+                usdAmount = config.TP_MAX_OPEN_SZ_USD
+                console.log(Date.now() + " INFO: " + target.name + "MAX_USD_SZ: " + usdAmount  )
+            }
+            try {  
+                await this.open(target, usdAmount) 
+                console.log(Date.now() + " INFO: SCALE " + target.name + " mr: " + perpmr.toFixed(4) +  
+                                      " usdamnt: " + usdAmount.toFixed(4) + " freec: " + freec.toFixed(4)) 
+            } catch { console.log(Date.now() + ", maxMargin Failed Open,  " +  target.name ) }
+            // open only blocks until tx is sent NOT minted. 
+            //wait 6666 ms to give enough time for tx to mint befor exiting loop
+            setTimeout(async () => {
+                let szf = (await this.perpService.getTotalPositionSize(target.wallet.address, target.baseToken)).toNumber()
+                if (szf == szzero) {console.warn(target.name + " HACK: no sz change after 6666 ms")} 
+              }, 6666);
+        }
+            
+     
+    
     async scaleUpCheck(market: Market) {
         if ( !(await this.isNonZeroPos(market)) ) {return}
 
@@ -2380,7 +2550,8 @@ async BKPscratchCheck() {
     //await this.ensureSwapListenersOK()
     // new cycle. update cycle deltas based on what events have been received since last cycle
     this.processEventInputs()
-    this.capitalFlowCheck()
+
+    this.capitalFlowCheck() // <--- DEPRECATE
     
     //this.computeCorrIndex()
     // adjust gas price
@@ -2399,12 +2570,14 @@ async BKPscratchCheck() {
   //await this.scratchCheck(market)  
     //ALERT. commenting out scaling/downscale while testing MSD
     //await this.downScaleCheck(market)
-    await this.scaleUpCheck(market)
+    //await this.scaleUpCheck(market)
+    //await this.mrScaleSpreadCheck(market)   <-- DEPRE
     //await this.ratchedMaxLeverageTriggerCheck(market) 
     //await this.maxMaxMarginRatioCheck(market)
     //---- rebalance check
-    await this.bernouillyFallsCheck()
-    await this.HACK_OPT_KILL()
+    //await this.bernouillyFallsCheck()
+    await this.lexitCheck()
+    await this.HACK_PEXIT()
 
     //await this.wakeUpCheck(market) //wakeup only favored leg if sided mkt else both
 
@@ -2901,3 +3074,4 @@ HIDE */
         
 e    }*/
 }
+

@@ -2035,7 +2035,7 @@ async maxLossCheckAndStateUpd(mkt: Market): Promise<boolean> {
 //TODO.OPTIMIZE to read last n lines from the file
 async getMeanDeltaForTicker(ticker: string): Promise<number | undefined> {
   try {
-    const filePath = 'path/to/wire.csv';  // Replace with the actual file path
+    const filePath = '../wire/stats.csv';  // Replace with the actual file path
     const content = await fs.promises.readFile(filePath, 'utf-8');
     const lines = content.split('\n');
 
@@ -2091,13 +2091,13 @@ async lexitCheck(): Promise<void> {
       
         if (mdlta! > MAX_DEVIATION_THRESHOLD) {  // i.e getting longer, close the short
             // If heuristicSkew is less than the threshold, return the close functor
-            await this.close(longleg)
+            await this.close(shortleg)
             //FIXME.FOF state update should be inslde close function
             longleg.positionState.status = State.CLOSING
         }
         if (mdlta! < MIN_DEVIATION_THRESHOLD) {  // i.e getting longer, close the short
           // If heuristicSkew is less than the threshold, return the close functor
-          await this.close(shortleg);
+          await this.close(longleg);
         } 
     }
 }

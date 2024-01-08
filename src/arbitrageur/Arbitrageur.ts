@@ -1663,13 +1663,13 @@ async pscCorrelationCheck(): Promise<boolean> { // FOF
         let rshort = this.marketMap['vLINK_SHORT']
 
         // if anyleg is zero => in play, corrleation signal already fired
-        if (mlong.size * mshort.size * rlong.size * rshort.size != 0) { return false }
+        if (mlong.size * mshort.size * rlong.size * rshort.size == 0) { return false }
 
         // signal has to be in the same direction and minimum magnitud 
         let mTickDelta = this.poolState[mlong.tkr].cycleTickDelta
         let rTickDelta = this.poolState[rlong.tkr].cycleTickDelta
 
-        if (mTickDelta * rTickDelta < 0 ) { return false }
+        if (mTickDelta * rTickDelta <= 0 ) { return false }
         if ( (mTickDelta < mlong.longEntryTickDelta) || (rTickDelta < rlong.longEntryTickDelta)) { return false }
 
         // ok, we got a signal to parrondo ie close one leg on each. for now we dont care who will be m or r

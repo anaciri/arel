@@ -9,7 +9,7 @@ import { UniswapV3Pool } from "@perp/common/build/types/ethers-uniswap"
 import BigNumber from 'bignumber.js';
 import Big from "big.js"
 import { ethers } from "ethers"
-import { endsWith, first, max, padEnd, update, upperFirst, zip } from "lodash"
+import { endsWith, first, matchesProperty, max, padEnd, update, upperFirst, zip } from "lodash"
 import { decode } from "punycode"
 import { Service } from "typedi"
 
@@ -33,6 +33,15 @@ const LEXIT_THRESHOLD = 0; // Set your threshold value
 const TX_MINTED_WAIT_SEC = 3
 const MAX_DEVIATION_THRESHOLD = 1.2
 const MIN_DEVIATION_THRESHOLD = 0.8
+
+enum StgCASC {
+    WAITING_FOR_SIGNAL = 'WAITING_FOR_SIGNAL',
+    ON_PLAY = "ON_PLAY",
+    END_ROLL = "END_ROLL",
+  }
+
+// wait for min tick dlta same sign correlation   
+let cascState = StgCASC.WAITING_FOR_SIGNAL
 
 enum State {
     OPEN = "OPEN",
@@ -257,6 +266,7 @@ interface PoolState {
 }  
 
 interface Market {
+    size: number
     wallet: Wallet
     side: Side
     name: string
@@ -643,6 +653,7 @@ if (config.TRACE_FLAG) { console.log(" TRACE: evt: " + tkr  + " " + timestamp + 
                 minMarginRatio: market.RESET_MARGIN - config.TP_MARGIN_STEP_INC,
                 initCollateral: market.START_COLLATERAL,  // will not change until restart
                 startCollateral: market.START_COLLATERAL, // will change to previous settled collatera
+                size: sz,
                 fcb: market.FC_BASIS,
                 fcr:1,  // when position is not open yest fcb == fc == deposited amount
                 idxBasisCollateral: market.START_COLLATERAL, // incl unrealized profit
@@ -1199,6 +1210,10 @@ async getPosVal(leg: Market): Promise<Number> {
 
     try {
         await this.openPosition(mkt.wallet, mkt.baseToken ,mkt.side ,AmountType.QUOTE,Big(usdAmount),broverrides,undefined,undefined)
+        // update size for mkt
+        mkt.size = (await this.perpService.getTotalPositionSize(mkt.wallet.address, mkt.baseToken)).toNumber()
+        console.log(mkt.name + " INFO: new size is: " + mkt.size )
+        
      }
     catch (e: any) {
         console.error(mkt.name + ` ERROR: FAILED OPEN. Rotating endpoint: ${e.toString()}`)
@@ -1293,6 +1308,10 @@ computeWeightedArithAvrg(cticks: TickData[], cweights: number[]): number {
         // null out mkt.size and mkt.basis
         this.marketMap[mkt.name].startSize = null
         this.marketMap[mkt.name].openMark =null
+
+        // update size for mkt
+        mkt.size = (await this.perpService.getTotalPositionSize(mkt.wallet.address, mkt.baseToken)).toNumber()
+        console.log(mkt.name + " INFO: new size is: " + mkt.size )
         }
     catch (e: any) {
             console.log(mkt.name + ` ERROR: FAILED CLOSE ${mkt.name} Rotating endpoint: ${e.toString()}`)
@@ -1630,7 +1649,52 @@ if (config.TRACE_FLAG) { console.log(new Date().toLocaleString() + " TRACE: wake
     return false
 }
 
+// parrondo spike capture . correlation check
+// if both tickers e.g op and link move in same direction above a min tick i.e jump in correlation
+// amputed on long and one short aka momentum and mean regression play
+// exit if a) buzzer b) pexit
+async pscCorrelationCheck(): Promise<boolean> { // FOF
+    // check enabled markets
 
+    for (const tkr of this.enabledMarkets) {  // FIX post FOF
+        let mlong = this.marketMap['vOP']
+        let mshort = this.marketMap['vOP_SHORT']
+        let rlong = this.marketMap['vLINK']
+        let rshort = this.marketMap['vLINK_SHORT']
+
+        // if anyleg is zero => in play, corrleation signal already fired
+        if (mlong.size * mshort.size * rlong.size * rshort.size != 0) { return false }
+
+        // signal has to be in the same direction and minimum magnitud 
+        let mTickDelta = this.poolState[mlong.tkr].cycleTickDelta
+        let rTickDelta = this.poolState[rlong.tkr].cycleTickDelta
+
+        if (mTickDelta * rTickDelta < 0 ) { return false }
+        if ( (mTickDelta < mlong.longEntryTickDelta) || (rTickDelta < rlong.longEntryTickDelta)) { return false }
+
+        // ok, we got a signal to parrondo ie close one leg on each. for now we dont care who will be m or r
+        // start momentum and a reversion play. dont know which is which 
+        await this.close( mlong )
+        await this.close(rshort)
+    }
+    return true
+}
+
+// cascStates ROLL_END -> ON_PLAY
+async cascStgyRun() {
+
+    if (cascState != StgCASC.ON_PLAY) {
+    // check for correlation signal to move to ON_PLAY state
+        await this.pscCorrelationCheck() 
+    }
+    else if ( cascState == StgCASC.ON_PLAY )  { // we are on play check for pexit and roll end
+        await this.cascPexitCheck()
+    }
+    else { // OK we are on roll end. pexit must have killed it
+        cascState = StgCASC.END_ROLL
+        console.log( new Date().toLocaleTimeString() + "INFO: ROLL ENDED")
+    }
+}
 
 
 //----------------------------------
@@ -2128,6 +2192,32 @@ async lexitCheck(): Promise<void> {
             console.log(new Date().toLocaleDateString() + " INFO: ENDING ROLL FOR " + mkt.name )
         }// mark check positive 
     }
+  }
+    async cascPexitCheck(): Promise<void> {
+        // check if any tkr has unrealized pnl of 0 /imperfect inference that is closed
+        let tkrs = [...this.enabledMarkets]
+    
+        //ASSuming that if unrealized pnl = 0.0000 must be closed (race cond posible while closing stradle) use .size?
+        // it can take over 3 seconds to mint a close tx if routine is 1 minute u will be doing multiple kills
+        for (const t of tkrs) {
+            let l = (await this.perpService.getUnrealizedPnl(this.marketMap[t].wallet.address)).toNumber()
+            let s = (await this.perpService.getUnrealizedPnl(this.marketMap[t + '_SHORT'].wallet.address)).toNumber()
+            if (l*s !=0) { continue }// should not happen. throw? dido abajo
+            if (l == 0 && s ==0) { continue } 
+            // ok. one legged straddle, ASSuming the previous. now determine which is non zero?
+            let mkt = l != 0 ? this.marketMap[t] : this.marketMap[t + '_SHORT'] // both cant be zero
+            const icol = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
+        
+            //peak tick updated by eventInput procesor. they should match
+            if (icol > mkt.idxBasisCollateral) { mkt.idxBasisCollateral = icol }
+            let uret = 1 + (icol - mkt.idxBasisCollateral)/mkt.idxBasisCollateral
+    
+            this.marketMap[mkt.name].uret = uret
+            if (uret < config.MIN_LOSS_BUZZ ) { 
+                await this.close(mkt)
+                console.log(new Date().toLocaleDateString() + " INFO: ENDING ROLL FOR " + mkt.name )
+            }// mark check positive 
+        }
 }
    
 
@@ -2551,11 +2641,16 @@ async BKPscratchCheck() {
     // new cycle. update cycle deltas based on what events have been received since last cycle
     this.processEventInputs()
 
-    this.capitalFlowCheck() // <--- DEPRECATE
+    
+    
+
+    this.capitalFlowCheck() // needed ???
     
     //this.computeCorrIndex()
     // adjust gas price
     this.setGasPx()
+
+    await this.cascStgyRun()
 
     // now that cycle events delta. first things first.check for TP_MAX_LOSS
     /*
@@ -2576,8 +2671,8 @@ async BKPscratchCheck() {
     //await this.maxMaxMarginRatioCheck(market)
     //---- rebalance check
     //await this.bernouillyFallsCheck()
-    await this.lexitCheck()
-    await this.HACK_PEXIT()
+    //await this.lexitCheck()
+    
 
     //await this.wakeUpCheck(market) //wakeup only favored leg if sided mkt else both
 
@@ -3073,5 +3168,9 @@ HIDE */
         }
         
 e    }*/
+}
+
+function cascStgyRun() {
+    throw new Error("Function not implemented.")
 }
 

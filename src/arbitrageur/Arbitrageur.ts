@@ -1706,8 +1706,9 @@ async cascStgyRun() {
     else if ( cascState == StgCASC.ON_PLAY )  { // we are on play check for pexit and roll end
         await this.cascPexitCheck()
     }
-    else { // OK we are on roll end. pexit must have killed it
-        cascState = StgCASC.END_ROLL
+    else { // OK we are on roll end. IF current is ON_PLAY and all are zero
+        //cascState = StgCASC.END_ROLL
+        console.log("FIX transition from ONPLAY if all legs sz are zero")
         console.log( new Date().toLocaleTimeString() + "INFO: ROLL ENDED")
     }
 }

@@ -2231,7 +2231,10 @@ async lexitCheck(): Promise<void> {
     
             this.marketMap[mkt.name].uret = uret
             if (uret < config.MIN_LOSS_BUZZ ) { 
-                await this.close(mkt)
+                // avoid double closing
+                if( (await this.perpService.getTotalPositionSize(mkt.wallet.address, mkt.baseToken)).toNumber() != 0) {
+                    await this.close(mkt)
+                }
                 console.log(new Date().toLocaleDateString() + " INFO: ENDING ROLL FOR " + mkt.name )
             }// mark check positive 
         }

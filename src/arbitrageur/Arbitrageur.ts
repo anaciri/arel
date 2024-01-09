@@ -1656,26 +1656,34 @@ if (config.TRACE_FLAG) { console.log(new Date().toLocaleString() + " TRACE: wake
 async pscCorrelationCheck(): Promise<boolean> { // FOF
     // check enabled markets
 
+
     for (const tkr of this.enabledMarkets) {  // FIX post FOF
+        //TOFIX.PERF shouldnt be checking everycyle if is a restart
         let mlong = this.marketMap['vOP']
-        let mshort = this.marketMap['vOP_SHORT']
-        let rlong = this.marketMap['vLINK']
-        let rshort = this.marketMap['vLINK_SHORT']
+        //let mshort = this.marketMap['vOP_SHORT']
+        //let rlong = this.marketMap['vPERP']
+        let rshort = this.marketMap['vPERP_SHORT']
 
-        // if anyleg is zero => in play, corrleation signal already fired
-        if (mlong.size * mshort.size * rlong.size * rshort.size == 0) { return false }
+        // is a restart? i.e there is at least 1 runing. DANGER check fails if one of the previous open fails
+        if ((mlong.size != 0) || (rshort.size != 0)) { return false } // likely a restart
 
-        // signal has to be in the same direction and minimum magnitud 
+         // signal has to be in the same direction and minimum magnitud 
         let mTickDelta = this.poolState[mlong.tkr].cycleTickDelta
-        let rTickDelta = this.poolState[rlong.tkr].cycleTickDelta
+        let rTickDelta = this.poolState[rshort.tkr].cycleTickDelta
 
         if (mTickDelta * rTickDelta <= 0 ) { return false }
-        if ( (mTickDelta < mlong.longEntryTickDelta) || (rTickDelta < rlong.longEntryTickDelta)) { return false }
+        if ( (mTickDelta < mlong.longEntryTickDelta) || (rTickDelta < rshort.shortEntryTickDelta)) { return false }
 
-        // ok, we got a signal to parrondo ie close one leg on each. for now we dont care who will be m or r
-        // start momentum and a reversion play. dont know which is which 
-        await this.close( mlong )
-        await this.close(rshort)
+        // ok, we got a signal to parrondo ie open a Momementum and a Regression game and rebalance at roll end
+        let lsz = Math.min(mlong.startCollateral / mlong.resetMargin, config.TP_MAX_OPEN_SZ_USD)
+        let ssz = Math.min(rshort.startCollateral / rshort.resetMargin, config.TP_MAX_OPEN_SZ_USD)
+        await this.open( mlong, lsz )
+        console.log(new Date().toLocaleTimeString() + " INFO: OPEN " + mlong.name )
+        await this.open(rshort, ssz)
+        console.log(new Date().toLocaleTimeString() + " INFO: OPEN " + mlong.name )
+        // move to next state
+        cascState = StgCASC.ON_PLAY
+        console.log(new Date().toLocaleTimeString() + " INFO: STATE TX TO " + cascState )
     }
     return true
 }
@@ -2200,17 +2208,17 @@ async lexitCheck(): Promise<void> {
         //ASSuming that if unrealized pnl = 0.0000 must be closed (race cond posible while closing stradle) use .size?
         // it can take over 3 seconds to mint a close tx if routine is 1 minute u will be doing multiple kills
         for (const t of tkrs) {
-            let l = (await this.perpService.getUnrealizedPnl(this.marketMap[t].wallet.address)).toNumber()
-            let s = (await this.perpService.getUnrealizedPnl(this.marketMap[t + '_SHORT'].wallet.address)).toNumber()
-            if (l*s !=0) { continue }// should not happen. throw? dido abajo
-            if (l == 0 && s ==0) { continue } 
-            // ok. one legged straddle, ASSuming the previous. now determine which is non zero?
-            let mkt = l != 0 ? this.marketMap[t] : this.marketMap[t + '_SHORT'] // both cant be zero
+            let l = this.marketMap[t]
+
+            // which of the leg is alive
+            let mkt = l.size != 0 ? this.marketMap[t] : this.marketMap[t + '_SHORT'] // both cant be zero
             const icol = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
         
             //peak tick updated by eventInput procesor. they should match
             if (icol > mkt.idxBasisCollateral) { mkt.idxBasisCollateral = icol }
+
             let uret = 1 + (icol - mkt.idxBasisCollateral)/mkt.idxBasisCollateral
+            console.log(mkt.name + " ure: " + uret)
     
             this.marketMap[mkt.name].uret = uret
             if (uret < config.MIN_LOSS_BUZZ ) { 

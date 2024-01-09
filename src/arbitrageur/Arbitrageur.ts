@@ -1672,7 +1672,7 @@ async pscCorrelationCheck(): Promise<boolean> { // FOF
         let rTickDelta = this.poolState[rshort.tkr].cycleTickDelta
 
         if (mTickDelta * rTickDelta <= 0 ) { return false }
-        if ( (mTickDelta < mlong.longEntryTickDelta) || (rTickDelta < rshort.shortEntryTickDelta)) { return false }
+        if ( (Math.abs(mTickDelta) < mlong.longEntryTickDelta) || (Math.abs(rTickDelta) < rshort.shortEntryTickDelta)) { return false }
 
         // ok, we got a signal to parrondo ie open a Momementum and a Regression game and rebalance at roll end
         let lsz = Math.min(mlong.startCollateral / mlong.resetMargin, config.TP_MAX_OPEN_SZ_USD)

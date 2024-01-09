@@ -1658,14 +1658,14 @@ async pscCorrelationCheck(): Promise<boolean> { // FOF
 
 
     for (const tkr of this.enabledMarkets) {  // FIX post FOF
-        //TOFIX.PERF shouldnt be checking everycyle if is a restart
+        //TOFIX. DUPLICATE/INNEFICIENT shouldnt be checking everycyle if is a restart
         let mlong = this.marketMap['vOP']
         //let mshort = this.marketMap['vOP_SHORT']
         //let rlong = this.marketMap['vPERP']
         let rshort = this.marketMap['vPERP_SHORT']
 
         // is a restart? i.e there is at least 1 runing. DANGER check fails if one of the previous open fails
-        if ((mlong.size != 0) || (rshort.size != 0)) { return false } // likely a restart
+        //if ((mlong.size != 0) || (rshort.size != 0)) { return false } // likely a restart
 
          // signal has to be in the same direction and minimum magnitud 
         let mTickDelta = this.poolState[mlong.tkr].cycleTickDelta
@@ -1680,7 +1680,7 @@ async pscCorrelationCheck(): Promise<boolean> { // FOF
         await this.open( mlong, lsz )
         console.log(new Date().toLocaleTimeString() + " INFO: OPEN " + mlong.name )
         await this.open(rshort, ssz)
-        console.log(new Date().toLocaleTimeString() + " INFO: OPEN " + mlong.name )
+        console.log(new Date().toLocaleTimeString() + " INFO: OPEN " + rshort.name )
         // move to next state
         cascState = StgCASC.ON_PLAY
         console.log(new Date().toLocaleTimeString() + " INFO: STATE TX TO " + cascState )
@@ -1690,6 +1690,14 @@ async pscCorrelationCheck(): Promise<boolean> { // FOF
 
 // cascStates ROLL_END -> ON_PLAY
 async cascStgyRun() {
+
+    let mlong = this.marketMap['vOP']
+    //let mshort = this.marketMap['vOP_SHORT']
+    //let rlong = this.marketMap['vPERP']
+    let rshort = this.marketMap['vPERP_SHORT']
+
+    // is a restart? i.e there is at least 1 runing. DANGER check fails if one of the previous open fails
+    if ((mlong.size != 0) || (rshort.size != 0)) { cascState = StgCASC.ON_PLAY } // likely a restart
 
     if (cascState != StgCASC.ON_PLAY) {
     // check for correlation signal to move to ON_PLAY state
@@ -2218,7 +2226,7 @@ async lexitCheck(): Promise<void> {
             if (icol > mkt.idxBasisCollateral) { mkt.idxBasisCollateral = icol }
 
             let uret = 1 + (icol - mkt.idxBasisCollateral)/mkt.idxBasisCollateral
-            console.log(mkt.name + " ure: " + uret)
+            console.log(mkt.name + " uret: " + uret)
     
             this.marketMap[mkt.name].uret = uret
             if (uret < config.MIN_LOSS_BUZZ ) { 

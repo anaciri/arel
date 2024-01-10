@@ -1678,8 +1678,14 @@ async pscCorrelationCheck(): Promise<boolean> { // FOF
         let lsz = Math.min(mlong.startCollateral / mlong.resetMargin, config.TP_MAX_OPEN_SZ_USD)
         let ssz = Math.min(rshort.startCollateral / rshort.resetMargin, config.TP_MAX_OPEN_SZ_USD)
         await this.open( mlong, lsz )
+        // avoid double closing. wait 3 seconds before exiting block
+        await new Promise(resolve => setTimeout(resolve, 3000))  
+
         console.log(new Date().toLocaleTimeString() + " INFO: OPEN " + mlong.name )
         await this.open(rshort, ssz)
+        // avoid double closing. wait 3 seconds before exiting block
+        await new Promise(resolve => setTimeout(resolve, 3000))
+        
         console.log(new Date().toLocaleTimeString() + " INFO: OPEN " + rshort.name )
         // move to next state
         cascState = StgCASC.ON_PLAY
@@ -2229,14 +2235,12 @@ async lexitCheck(): Promise<void> {
             let uret = 1 + (icol - mkt.idxBasisCollateral)/mkt.idxBasisCollateral
             console.log(mkt.name + " uret: " + uret)
     
-            this.marketMap[mkt.name].uret = uret
-            if (uret < config.MIN_LOSS_BUZZ ) { 
-                // avoid double closing
-                if( (await this.perpService.getTotalPositionSize(mkt.wallet.address, mkt.baseToken)).toNumber() != 0) {
-                    await this.close(mkt)
-                }
+            if (uret < config.MIN_LOSS_BUZZ) {
+                await this.close(mkt)
+                // avoid double closing. wait 3 seconds before exiting block
+                await new Promise(resolve => setTimeout(resolve, 3000))
                 console.log(new Date().toLocaleDateString() + " INFO: ENDING ROLL FOR " + mkt.name )
-            }// mark check positive 
+            }
         }
 }
    

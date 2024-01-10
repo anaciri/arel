@@ -1654,11 +1654,8 @@ if (config.TRACE_FLAG) { console.log(new Date().toLocaleString() + " TRACE: wake
 // amputed on long and one short aka momentum and mean regression play
 // exit if a) buzzer b) pexit
 async pscCorrelationCheck(): Promise<boolean> { // FOF
-    // check enabled markets
 
-
-    for (const tkr of this.enabledMarkets) {  // FIX post FOF
-        //TOFIX. DUPLICATE/INNEFICIENT shouldnt be checking everycyle if is a restart
+    //TOFIX. DUPLICATE/INNEFICIENT shouldnt be checking everycyle if is a restart
         let mlong = this.marketMap['vPERP']
         //let mshort = this.marketMap['vOP_SHORT']
         //let rlong = this.marketMap['vPERP']
@@ -1690,7 +1687,7 @@ async pscCorrelationCheck(): Promise<boolean> { // FOF
         // move to next state
         cascState = StgCASC.ON_PLAY
         console.log(new Date().toLocaleTimeString() + " INFO: STATE TX TO " + cascState )
-    }
+    
     return true
 }
 

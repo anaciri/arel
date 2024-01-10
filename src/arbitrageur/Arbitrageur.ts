@@ -1659,10 +1659,10 @@ async pscCorrelationCheck(): Promise<boolean> { // FOF
 
     for (const tkr of this.enabledMarkets) {  // FIX post FOF
         //TOFIX. DUPLICATE/INNEFICIENT shouldnt be checking everycyle if is a restart
-        let mlong = this.marketMap['vOP']
+        let mlong = this.marketMap['vPERP']
         //let mshort = this.marketMap['vOP_SHORT']
         //let rlong = this.marketMap['vPERP']
-        let rshort = this.marketMap['vPERP_SHORT']
+        let rshort = this.marketMap['vOP_SHORT']
 
         // is a restart? i.e there is at least 1 runing. DANGER check fails if one of the previous open fails
         //if ((mlong.size != 0) || (rshort.size != 0)) { return false } // likely a restart
@@ -1679,13 +1679,13 @@ async pscCorrelationCheck(): Promise<boolean> { // FOF
         let ssz = Math.min(rshort.startCollateral / rshort.resetMargin, config.TP_MAX_OPEN_SZ_USD)
         await this.open( mlong, lsz )
         // avoid double closing. wait 3 seconds before exiting block
-        await new Promise(resolve => setTimeout(resolve, 3000))  
+        await new Promise(resolve => setTimeout(resolve, 4000))  
 
         console.log(new Date().toLocaleTimeString() + " INFO: OPEN " + mlong.name )
         await this.open(rshort, ssz)
         // avoid double closing. wait 3 seconds before exiting block
-        await new Promise(resolve => setTimeout(resolve, 3000))
-        
+        await new Promise(resolve => setTimeout(resolve, 4000))
+
         console.log(new Date().toLocaleTimeString() + " INFO: OPEN " + rshort.name )
         // move to next state
         cascState = StgCASC.ON_PLAY
@@ -2238,7 +2238,7 @@ async lexitCheck(): Promise<void> {
             if (uret < config.MIN_LOSS_BUZZ) {
                 await this.close(mkt)
                 // avoid double closing. wait 3 seconds before exiting block
-                await new Promise(resolve => setTimeout(resolve, 3000))
+                await new Promise(resolve => setTimeout(resolve, 4000))
                 console.log(new Date().toLocaleDateString() + " INFO: ENDING ROLL FOR " + mkt.name )
             }
         }

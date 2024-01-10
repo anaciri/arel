@@ -1674,34 +1674,40 @@ async pscCorrelationCheck(): Promise<boolean> { // FOF
         // ok, we got a signal to parrondo ie open a Momementum and a Regression game and rebalance at roll end
         let lsz = Math.min(mlong.startCollateral / mlong.resetMargin, config.TP_MAX_OPEN_SZ_USD)
         let ssz = Math.min(rshort.startCollateral / rshort.resetMargin, config.TP_MAX_OPEN_SZ_USD)
-        await this.open( mlong, lsz )
-        // avoid double closing. wait 3 seconds before exiting block
-        await new Promise(resolve => setTimeout(resolve, 5000))  
+        try { 
+            await this.open( mlong, lsz )
+            // avoid double closing. wait 3 seconds before exiting block
+            await new Promise(resolve => setTimeout(resolve, 5000))  
 
-        console.log(new Date().toLocaleTimeString() + " INFO: OPEN " + mlong.name )
-        await this.open(rshort, ssz)
-        // avoid double closing. wait 3 seconds before exiting block
-        await new Promise(resolve => setTimeout(resolve, 5000))
-
-        console.log(new Date().toLocaleTimeString() + " INFO: OPEN " + rshort.name )
-        // move to next state
-        cascState = StgCASC.ON_PLAY
-        console.log(new Date().toLocaleTimeString() + " INFO: STATE TX TO " + cascState )
-    
+            console.log(new Date().toLocaleTimeString() + " INFO: OPEN " + mlong.name )
+            await this.open(rshort, ssz)
+            // avoid double closing. wait 3 seconds before exiting block
+            await new Promise(resolve => setTimeout(resolve, 5000))
+        }
+        catch { console.log("DIAG: Exception thrown on open attempt")}
+        finally {
+            console.log(new Date().toLocaleTimeString() + " INFO: OPEN " + rshort.name )
+            // move to next state
+            cascState = StgCASC.ON_PLAY
+            console.log(new Date().toLocaleTimeString() + " INFO: STATE TX TO " + cascState )
+        }
     return true
 }
 
 // cascStates ROLL_END -> ON_PLAY
 async cascStgyRun() {
 
-    let mlong = this.marketMap['vOP']
+    let mlong = this.marketMap['vPERP']
     //let mshort = this.marketMap['vOP_SHORT']
     //let rlong = this.marketMap['vPERP']
-    let rshort = this.marketMap['vPERP_SHORT']
+    let rshort = this.marketMap['vOP_SHORT']
 
     // is a restart? i.e there is at least 1 runing. DANGER check fails if one of the previous open fails
-    if ((mlong.size != 0) || (rshort.size != 0)) { cascState = StgCASC.ON_PLAY } // likely a restart
-
+    if ((mlong.size != 0) || (rshort.size != 0)) { 
+        cascState = StgCASC.ON_PLAY 
+        console.log("DIAG: Is a restart " + cascState)
+    } // likely a restart
+    console.log(mlong.name + " size: " + mlong.size +  ", " + rshort.size)
     if (cascState != StgCASC.ON_PLAY) {
     // check for correlation signal to move to ON_PLAY state
         await this.pscCorrelationCheck() 

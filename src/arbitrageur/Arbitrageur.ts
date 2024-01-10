@@ -1676,12 +1676,12 @@ async pscCorrelationCheck(): Promise<boolean> { // FOF
         let ssz = Math.min(rshort.startCollateral / rshort.resetMargin, config.TP_MAX_OPEN_SZ_USD)
         await this.open( mlong, lsz )
         // avoid double closing. wait 3 seconds before exiting block
-        await new Promise(resolve => setTimeout(resolve, 4000))  
+        await new Promise(resolve => setTimeout(resolve, 5000))  
 
         console.log(new Date().toLocaleTimeString() + " INFO: OPEN " + mlong.name )
         await this.open(rshort, ssz)
         // avoid double closing. wait 3 seconds before exiting block
-        await new Promise(resolve => setTimeout(resolve, 4000))
+        await new Promise(resolve => setTimeout(resolve, 5000))
 
         console.log(new Date().toLocaleTimeString() + " INFO: OPEN " + rshort.name )
         // move to next state
@@ -2235,7 +2235,7 @@ async lexitCheck(): Promise<void> {
             if (uret < config.MIN_LOSS_BUZZ) {
                 await this.close(mkt)
                 // avoid double closing. wait 3 seconds before exiting block
-                await new Promise(resolve => setTimeout(resolve, 4000))
+                await new Promise(resolve => setTimeout(resolve, 5000))
                 console.log(new Date().toLocaleDateString() + " INFO: ENDING ROLL FOR " + mkt.name )
             }
         }

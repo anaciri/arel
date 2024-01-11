@@ -1676,17 +1676,24 @@ async pscCorrelationCheck(): Promise<boolean> { // FOF
         let ssz = Math.min(rshort.startCollateral / rshort.resetMargin, config.TP_MAX_OPEN_SZ_USD)
         try { 
             await this.open( mlong, lsz )
-            // avoid double closing. wait 3 seconds before exiting block
-            await new Promise(resolve => setTimeout(resolve, 5000))  
-
-            console.log(new Date().toLocaleTimeString() + " INFO: OPEN " + mlong.name )
-            await this.open(rshort, ssz)
-            // avoid double closing. wait 3 seconds before exiting block
-            await new Promise(resolve => setTimeout(resolve, 5000))
+            console.log(new Date().toLocaleTimeString() + " INFO: OPENING " + mlong.name )
+            // short sleep before the other open to provider wont complaint
+            await sleep(1000)
         }
-        catch { console.log("DIAG: Exception thrown on open attempt")}
+        catch { 
+            console.log("DIAG: Exception thrown on open attempt: " + mlong.name)
+            // lets slow down
+            await sleep(5000)
+        }
+        try {
+            await this.open(rshort, ssz)
+            await sleep(5000)
+            // avoid multiple opens
+            console.log(new Date().toLocaleTimeString() + " INFO: OPENING " + rshort.name )
+            await sleep(5000)
+        }    
         finally {
-            console.log(new Date().toLocaleTimeString() + " INFO: OPEN " + rshort.name )
+            //console.log(new Date().toLocaleTimeString() + " INFO: OPEN " + rshort.name )
             // move to next state
             cascState = StgCASC.ON_PLAY
             console.log(new Date().toLocaleTimeString() + " INFO: STATE TX TO " + cascState )
@@ -1708,6 +1715,8 @@ async cascStgyRun() {
         console.log("DIAG: Is a restart " + cascState)
     } // likely a restart
     console.log(mlong.name + " size: " + mlong.size +  ", " + rshort.size)
+
+    // wakeup check
     if (cascState != StgCASC.ON_PLAY) {
     // check for correlation signal to move to ON_PLAY state
         await this.pscCorrelationCheck() 

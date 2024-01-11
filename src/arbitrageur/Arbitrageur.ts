@@ -37,8 +37,9 @@ const MIN_DEVIATION_THRESHOLD = 0.8
 enum StgCASC {
     WAITING_FOR_SIGNAL = 'WAITING_FOR_SIGNAL',
     ON_PLAY = "ON_PLAY",
-    END_ROLL = "END_ROLL",
-  }
+    ON_BUZZER = "ON_BUZZER",
+    END_ROLL = "END_ROLL"
+}
 
 // wait for min tick dlta same sign correlation   
 let cascState = StgCASC.WAITING_FOR_SIGNAL
@@ -797,6 +798,8 @@ if (config.TRACE_FLAG) { console.log(" TRACE: evt: " + tkr  + " " + timestamp + 
                 }),
             )
             //await sleep(config.PRICE_CHECK_INTERVAL_SEC * 1000)
+            // check gas price
+            this.setGasPx()
             // RUN casc stgy
             await this.cascStgyRun()
             await sleep(this.cycleTimmer * 1000)
@@ -1707,27 +1710,37 @@ async pscCorrelationCheck(): Promise<boolean> { // FOF
 async cascStgyRun() {
 
     let mlong = this.marketMap['vPERP']
-    //let mshort = this.marketMap['vOP_SHORT']
-    //let rlong = this.marketMap['vPERP']
     let rshort = this.marketMap['vOP_SHORT']
 
-    // is a restart? i.e there is at least 1 runing. DANGER check fails if one of the previous open fails
-    if ((mlong.size != 0) || (rshort.size != 0)) { 
+    // Clean START or RE-START ? i.e there is at least 1 runing. DANGER check fails if one of the previous open fails
+    if ((mlong.size != 0) && (rshort.size != 0)) { 
         cascState = StgCASC.ON_PLAY 
-        console.log("DIAG: Is a restart " + cascState)
-    } // likely a restart
-    console.log(mlong.name + " size: " + mlong.size +  ", " + rshort.size)
+        //console.log("DIAG: Is a restart " + cascState)
+    } // we know that at most 1 will be nonzero
+    else if ((mlong.size != 0) || (rshort.size != 0)) { 
+        cascState = StgCASC.ON_BUZZER 
+        //console.log("DIAG: Is a restart " + cascState)
+    }// not needed just for completness
+    else {
+        cascState = StgCASC.WAITING_FOR_SIGNAL
+    }
 
-    // wakeup check
-    if (cascState != StgCASC.ON_PLAY) {
+    console.log(mlong.name + cascState + " size: " + mlong.size +  ", " + rshort.size)
+
+    // Signal to wakeup ?
+    //if (cascState != StgCASC.ON_PLAY) {
+    if (cascState == StgCASC.WAITING_FOR_SIGNAL) {
     // check for correlation signal to move to ON_PLAY state
         await this.pscCorrelationCheck() 
     }
     else if ( cascState == StgCASC.ON_PLAY )  { // we are on play check for pexit and roll end
+        await this.cascLexitCheck()
+    }
+    else if ( cascState == StgCASC.ON_BUZZER ) { // OK we are on roll end. IF current is ON_PLAY and all are zero
         await this.cascPexitCheck()
     }
-    else { // OK we are on roll end. IF current is ON_PLAY and all are zero
-        //cascState = StgCASC.END_ROLL
+    // we are done. TODO: rebalance and start all over
+    else {
         console.log("FIX transition from ONPLAY if all legs sz are zero")
         console.log( new Date().toLocaleTimeString() + "INFO: ROLL ENDED")
     }
@@ -2230,7 +2243,7 @@ async lexitCheck(): Promise<void> {
         }// mark check positive 
     }
   }
-    async cascPexitCheck(): Promise<void> {
+    async cascLexitCheck(): Promise<void> {
         // check if any tkr has unrealized pnl of 0 /imperfect inference that is closed
         let tkrs = [...this.enabledMarkets]
     
@@ -2239,7 +2252,7 @@ async lexitCheck(): Promise<void> {
         for (const t of tkrs) {
             let l = this.marketMap[t]
 
-            // which of the leg is alive
+            // which of the leg long or short is open
             let mkt = l.size != 0 ? this.marketMap[t] : this.marketMap[t + '_SHORT'] // both cant be zero
             const icol = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
         
@@ -2249,13 +2262,46 @@ async lexitCheck(): Promise<void> {
             let uret = 1 + (icol - mkt.idxBasisCollateral)/mkt.idxBasisCollateral
             console.log(mkt.name + " uret: " + uret)
     
-            if (uret < config.MIN_LOSS_BUZZ) {
+            if (uret < config.MAX_ROLL_LOSS) {
                 await this.close(mkt)
                 // avoid double closing. wait 3 seconds before exiting block
-                await new Promise(resolve => setTimeout(resolve, 5000))
-                console.log(new Date().toLocaleDateString() + " INFO: ENDING ROLL FOR " + mkt.name )
+                //await new Promise(resolve => setTimeout(resolve, 5000))
+                cascState = StgCASC.ON_BUZZER
+                console.log(new Date().toLocaleDateString() + " INFO: TRANSITIONING TO ON_BUZZ" + mkt.name )
             }
         }
+}
+
+async cascPexitCheck(): Promise<void> {
+    // check if any tkr has unrealized pnl of 0 /imperfect inference that is closed
+    let tkrs = [...this.enabledMarkets]
+    // find out who is on buzzer i.e size nonzero
+    //ASSuming that if unrealized pnl = 0.0000 must be closed (race cond posible while closing stradle) use .size?
+    // it can take over 3 seconds to mint a close tx if routine is 1 minute u will be doing multiple kills
+    for (const t of tkrs) {
+        let l = this.marketMap[t]
+        let s = this.marketMap[t + '_SHORT']
+
+        // which tiker is surviving ie both long/short are zero
+        if (l.size + s.size == 0 ) { continue }
+
+        // which leg of the surving ticker
+        let mkt = l.size != 0 ? this.marketMap[t] : this.marketMap[t + '_SHORT'] // both cant be zero
+        const icol = (await this.perpService.getAccountValue(mkt.wallet.address)).toNumber()
+    
+        //peak tick updated by eventInput procesor. they should match
+        if (icol > mkt.idxBasisCollateral) { mkt.idxBasisCollateral = icol }
+
+        let uret = 1 + (icol - mkt.idxBasisCollateral)/mkt.idxBasisCollateral
+        console.log(mkt.name + " uret: " + uret)
+
+        if (uret < config.MIN_LOSS_BUZZ) {
+            await this.close(mkt)
+            // avoid double closing. wait 3 seconds before exiting block
+            //await new Promise(resolve => setTimeout(resolve, 5000))
+            console.log(new Date().toLocaleDateString() + " INFO: PEXITING FOR " + mkt.name )
+        }
+    }
 }
    
 
@@ -2685,8 +2731,7 @@ async BKPscratchCheck() {
     this.capitalFlowCheck() // needed ???
     
     //this.computeCorrIndex()
-    // adjust gas price
-    this.setGasPx()
+
 
     
 

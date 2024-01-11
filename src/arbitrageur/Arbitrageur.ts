@@ -797,6 +797,8 @@ if (config.TRACE_FLAG) { console.log(" TRACE: evt: " + tkr  + " " + timestamp + 
                 }),
             )
             //await sleep(config.PRICE_CHECK_INTERVAL_SEC * 1000)
+            // RUN casc stgy
+            await this.cascStgyRun()
             await sleep(this.cycleTimmer * 1000)
 
             // Run evtNodeCheck if EVT_PROVIDER_CHECK_INTERVAL_SEC seconds have elapsed since the last call
@@ -2686,7 +2688,7 @@ async BKPscratchCheck() {
     // adjust gas price
     this.setGasPx()
 
-    await this.cascStgyRun()
+    
 
     // now that cycle events delta. first things first.check for TP_MAX_LOSS
     /*

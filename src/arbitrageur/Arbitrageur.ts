@@ -1761,7 +1761,7 @@ async cascStgyRun() {
         //cascState = StgCASC.WAITING_FOR_SIGNAL
     }
 
-    console.log(mlong.name + cascState + " size: " + mlong.size +  ", " + rshort.size)
+    console.log(mlong.name + " DIAG: " + cascState + " size: " + mlong.size +  ", " + rshort.size)
 
     // Signal to wakeup ?
     //if (cascState != StgCASC.ON_PLAY) {
@@ -1776,7 +1776,7 @@ async cascStgyRun() {
         await this.cascPexitCheck()
     }
     else if ( cascState == StgCASC.REBALANCE ) { // OK we are on roll end. IF current is ON_PLAY and all are zero
-        //await this.rebalance()
+        //await this.rebalance() -> fc = cascMomentumTkr
     }
  
     // we are done. TODO: rebalance and start all over
@@ -2302,7 +2302,7 @@ async lexitCheck(): Promise<void> {
             let uret = 1 + (icol - mkt.idxBasisCollateral)/mkt.idxBasisCollateral
             console.log(mkt.name + " uret: " + uret)
     
-            if (uret < config.MAX_ROLL_LOSS) {
+            if (uret < config.TP_MAX_ROLL_LOSS) {
                 await this.close(mkt)
                 // avoid double closing. wait 3 seconds before exiting block
                 //await new Promise(resolve => setTimeout(resolve, 5000))

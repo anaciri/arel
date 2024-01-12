@@ -36,13 +36,49 @@ const MIN_DEVIATION_THRESHOLD = 0.8
 
 enum StgCASC {
     WAITING_FOR_SIGNAL = 'WAITING_FOR_SIGNAL',
-    ON_PLAY = "ON_PLAY",
-    ON_BUZZER = "ON_BUZZER",
-    END_ROLL = "END_ROLL"
+    ON_PLAY = 'ON_PLAY',
+    ON_BUZZER = 'ON_BUZZER',
+    END_ROLL = 'END_ROLL',
+    REBALANCE = 'REBALANCE',
 }
 
-// wait for min tick dlta same sign correlation   
+// casStrategy variables 
+/*
+class CascStrategy {
+    state: StgCASC;
+    momentumTickers: string[];
+    regressionTickers: string[];
+
+    constructor() {
+        this.momentumTickers = ['vPERP'];
+        this.regressionTickers = ['vOP_SHORT'];
+
+        // FOF
+        let mlong = this.momentumTickers[0];
+        let rshort = this.regressionTickers[0];
+
+        if (mlong.length !== 0 && rshort.length !== 0) {
+            this.state = StgCASC.ON_PLAY;
+            // console.log("DIAG: Is a restart " + this.state);
+        } else if (mlong.length !== 0 || rshort.length !== 0) {
+            this.state = StgCASC.ON_BUZZER;
+            // console.log("DIAG: Is a restart " + this.state);
+        } else {
+            this.state = StgCASC.WAITING_FOR_SIGNAL;
+        }
+        console.log(mlong + this.state + " size: " + mlong.length +  ", " + rshort.length);
+    }
+}
+
+const strategyInstance = new CascStrategy();
+*/
 let cascState = StgCASC.WAITING_FOR_SIGNAL
+let cascMomentumTkrs: string[] = ['vPERP'];
+let cascRegressionTkrs: string[] = ['vOP_SHORT'];
+
+
+
+
 
 enum State {
     OPEN = "OPEN",
@@ -1722,7 +1758,7 @@ async cascStgyRun() {
         //console.log("DIAG: Is a restart " + cascState)
     }// not needed just for completness
     else {
-        cascState = StgCASC.WAITING_FOR_SIGNAL
+        //cascState = StgCASC.WAITING_FOR_SIGNAL
     }
 
     console.log(mlong.name + cascState + " size: " + mlong.size +  ", " + rshort.size)
@@ -1739,8 +1775,12 @@ async cascStgyRun() {
     else if ( cascState == StgCASC.ON_BUZZER ) { // OK we are on roll end. IF current is ON_PLAY and all are zero
         await this.cascPexitCheck()
     }
+    else if ( cascState == StgCASC.REBALANCE ) { // OK we are on roll end. IF current is ON_PLAY and all are zero
+        //await this.rebalance()
+    }
+ 
     // we are done. TODO: rebalance and start all over
-    else {
+    else { // Last one moved me back to WAITING_SIGNAL
         console.log("FIX transition from ONPLAY if all legs sz are zero")
         console.log( new Date().toLocaleTimeString() + "INFO: ROLL ENDED")
     }

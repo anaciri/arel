@@ -38,6 +38,7 @@ enum StgCASC {
     WAITING_FOR_SIGNAL = 'WAITING_FOR_SIGNAL',
     ON_PLAY = 'ON_PLAY',
     ON_BUZZER = 'ON_BUZZER',
+    PPEXTI ='PPEXIT',
     END_ROLL = 'END_ROLL',
     REBALANCE = 'REBALANCE',
 }
@@ -1778,7 +1779,9 @@ async cascStgyRun() {
     else if ( cascState == StgCASC.REBALANCE ) { // OK we are on roll end. IF current is ON_PLAY and all are zero
         //await this.rebalance() -> fc = cascMomentumTkr
     }
- 
+    else if ( cascState == StgCASC.PPEXTI ) { // check for premature pexit
+        //check cascMlegMaxCount if none in the last _SECs ppexit
+    }
     // we are done. TODO: rebalance and start all over
     else { // Last one moved me back to WAITING_SIGNAL
         console.log("FIX transition from ONPLAY if all legs sz are zero")
@@ -2307,7 +2310,7 @@ async lexitCheck(): Promise<void> {
                 // avoid double closing. wait 3 seconds before exiting block
                 //await new Promise(resolve => setTimeout(resolve, 5000))
                 cascState = StgCASC.ON_BUZZER
-                console.log(new Date().toLocaleDateString() + " INFO: TRANSITIONING TO ON_BUZZ" + mkt.name )
+                console.log(new Date().toLocaleDateString() + " INFO: TRANSITIONING TO ON_BUZZ ")
             }
         }
 }

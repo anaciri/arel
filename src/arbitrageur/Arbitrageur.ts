@@ -1725,14 +1725,14 @@ async pscCorrelationCheck(): Promise<boolean> { // FOF
         catch { 
             console.log("DIAG: Exception thrown on open attempt: " + mlong.name)
             // lets slow down
-            await sleep(5000)
+            //await sleep(5000)
         }
         try {
             await this.open(rshort, ssz)
-            await sleep(5000)
+            //await sleep(5000)
             // avoid multiple opens
             console.log(new Date().toLocaleTimeString() + " INFO: OPENING " + rshort.name )
-            await sleep(5000)
+            //await sleep(5000)
         }    
         finally {
             //console.log(new Date().toLocaleTimeString() + " INFO: OPEN " + rshort.name )
@@ -1740,6 +1740,7 @@ async pscCorrelationCheck(): Promise<boolean> { // FOF
             cascState = StgCASC.ON_PLAY
             console.log(new Date().toLocaleTimeString() + " INFO: STATE TX TO " + cascState )
         }
+        console.log("INFO: mrdlta Signal arrived: " + mTickDelta + "," + rTickDelta)
     return true
 }
 
@@ -1775,6 +1776,9 @@ async cascStgyRun() {
     }
     else if ( cascState == StgCASC.ON_BUZZER ) { // OK we are on roll end. IF current is ON_PLAY and all are zero
         await this.cascPexitCheck()
+    }
+    else if ( cascState == StgCASC.END_ROLL ) { // OK we are on roll end. IF current is ON_PLAY and all are zero
+        await this.rollEnd()
     }
     else if ( cascState == StgCASC.REBALANCE ) { // OK we are on roll end. IF current is ON_PLAY and all are zero
         //await this.rebalance() -> fc = cascMomentumTkr
@@ -2303,18 +2307,42 @@ async lexitCheck(): Promise<void> {
             if (icol > mkt.idxBasisCollateral) { mkt.idxBasisCollateral = icol }
 
             let uret = 1 + (icol - mkt.idxBasisCollateral)/mkt.idxBasisCollateral
-            console.log(mkt.name + " uret: " + uret)
+            // actuall return if not rebased from new max
+            let oret = 1 + (icol - mkt.initCollateral)/mkt.initCollateral
+            console.log(mkt.name + " uret, oret: " + uret + " ," + oret)
     
             if (uret < config.TP_MAX_ROLL_LOSS) {
                 await this.close(mkt)
                 // avoid double closing. wait 3 seconds before exiting block
                 //await new Promise(resolve => setTimeout(resolve, 5000))
+
                 cascState = StgCASC.ON_BUZZER
                 console.log(new Date().toLocaleDateString() + " INFO: TRANSITIONING TO ON_BUZZ ")
             }
         }
 }
 
+async rollEnd(): Promise<void> { // TODO. SKIPPING REBALANCING
+    // reset
+    console.warn("YOU ARE SKIPPING/Rebalance for now fix SOOON")
+    let tkrs = [...this.enabledMarkets]
+    for (const t of tkrs) {
+        let l = this.marketMap[t]
+        let s = this.marketMap[t + '_SHORT']
+        // set start collateral to current collateral
+        let lfc = (await  this.perpService.getFreeCollateral(l.wallet.address)).toNumber()
+        this.marketMap[l.name].startCollateral = lfc
+
+        let sfc = (await  this.perpService.getFreeCollateral(s.wallet.address)).toNumber()
+        this.marketMap[s.name].startCollateral = sfc
+        console.log("INFO: " + l.name + " fc: " + lfc)
+        console.log("INFO: " + s.name + " fc: " + sfc)
+        // go back to new roll
+        cascState = StgCASC.WAITING_FOR_SIGNAL
+        console.log(new Date().toLocaleDateString() + " INFO: NEW ROLL, BACK WAITING ")
+    }
+
+}
 async cascPexitCheck(): Promise<void> {
     // check if any tkr has unrealized pnl of 0 /imperfect inference that is closed
     let tkrs = [...this.enabledMarkets]
@@ -2335,14 +2363,17 @@ async cascPexitCheck(): Promise<void> {
         //peak tick updated by eventInput procesor. they should match
         if (icol > mkt.idxBasisCollateral) { mkt.idxBasisCollateral = icol }
 
+        let oret = 1 + (icol - mkt.initCollateral)/mkt.initCollateral
+        // actuall return if not rebased from new max
         let uret = 1 + (icol - mkt.idxBasisCollateral)/mkt.idxBasisCollateral
-        console.log(mkt.name + " uret: " + uret)
+        console.log(mkt.name + " uret, oret: " + uret + " ," + oret)
 
         if (uret < config.MIN_LOSS_BUZZ) {
             await this.close(mkt)
             // avoid double closing. wait 3 seconds before exiting block
             //await new Promise(resolve => setTimeout(resolve, 5000))
-            console.log(new Date().toLocaleDateString() + " INFO: PEXITING FOR " + mkt.name )
+            cascState = StgCASC.END_ROLL
+            console.log(new Date().toLocaleDateString() + " INFO: TRANSITIONING TO END_ROLL " + mkt.name )
         }
     }
 }
